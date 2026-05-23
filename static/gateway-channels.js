@@ -59,7 +59,7 @@
       var enabled = ch && ch.enabled;
       html += '<div class="gw-card" data-platform="'+p.id+'" style="background:var(--card-bg);border:1px solid var(--border);border-radius:12px;padding:14px;'+(configured && !enabled ? 'opacity:0.5' : '')+'">';
       html += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">';
-      html += '<div style="display:flex;align-items:center;gap:8px"><span style="font-size:16px">'+p.emoji+'</span><span style="font-size:14px;font-weight:500">'+esc(p.label)+'</span></div>';
+      html += '<div style="display:flex;align-items:center;gap:8px"><span style="font-size:14px;font-weight:500">'+esc(p.label)+'</span></div>';
       if(configured){
         html += '<label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer"><input type="checkbox" class="gw-toggle" data-platform="'+p.id+'" '+(enabled?'checked':'')+'> <span style="color:var(--muted)">'+(enabled?'ON':'OFF')+'</span></label>';
       }

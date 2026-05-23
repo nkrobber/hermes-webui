@@ -1,6 +1,8 @@
 """
 Hermes Web UI -- HTTP helper functions.
 """
+from __future__ import annotations
+
 import json as _json
 import os
 import re as _re
@@ -65,7 +67,7 @@ def _accepts_gzip(handler) -> bool:
     return 'gzip' in ae
 
 
-def j(handler, payload, status: int=200, extra_headers: dict=None) -> None:
+def j(handler, payload, status: int=200, extra_headers: dict=None) -> bool:
     """Send a JSON response.
 
     *extra_headers*: optional dict of additional headers to include
@@ -91,6 +93,7 @@ def j(handler, payload, status: int=200, extra_headers: dict=None) -> None:
             handler.send_header(k, v)
     handler.end_headers()
     handler.wfile.write(body)
+    return True
 
 
 def t(handler, payload, status: int=200, content_type: str='text/plain; charset=utf-8') -> None:

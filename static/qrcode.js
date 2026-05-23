@@ -2243,6 +2243,8 @@ var qrcode = function() {
   //---------------------------------------------------------------------
   // returns qrcode function.
 
+  qrcode.QRErrorCorrectionLevel = QRErrorCorrectionLevel;
+
   return qrcode;
 }();
 
@@ -2294,7 +2296,7 @@ var qrcode = function() {
   }
   if (typeof window !== 'undefined') {
       window.qrcode = factory();
-      window.QRErrorCorrectionLevel = QRErrorCorrectionLevel;
+      window.QRErrorCorrectionLevel = window.qrcode.QRErrorCorrectionLevel;
   }
 }(function () {
     return qrcode;
