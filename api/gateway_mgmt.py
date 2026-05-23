@@ -101,17 +101,70 @@ def _qr_begin_wecom() -> dict:
         )
         with urllib.request.urlopen(req, timeout=15) as resp:
             raw = json.loads(resp.read().decode("utf-8"))
-        auth_url = (raw.get("data") or {}).get("auth_url", "")
+        data = raw.get("data") or {}
+        auth_url = data.get("auth_url", "")
+        scode = data.get("scode", "")
         if not auth_url:
             return {"ok": False, "error": "wecom did not return auth_url"}
+        if not scode:
+            return {"ok": False, "error": "wecom did not return scode"}
         return {
             "ok": True,
             "qr_data_url": auth_url,
-            "task_id": str(uuid.uuid4()),
+            "task_id": scode,  # Use scode as task_id for polling
             "expires_in": 300,
         }
     except Exception as exc:
         logger.exception("wecom QR begin failed")
+        return {"ok": False, "error": str(exc)}
+
+
+def _qr_poll_wecom(task_id: str) -> dict:
+    """Poll WeCom QR scan status.
+
+    task_id here is actually the scode from _qr_begin_wecom.
+    """
+    if not task_id:
+        return {"ok": False, "error": "missing task_id (scode)"}
+
+    try:
+        from gateway.platforms.wecom import _QR_QUERY_URL
+    except ImportError:
+        return {"ok": False, "error": "wecom module unavailable"}
+
+    try:
+        import urllib.request
+        import urllib.parse
+
+        query_url = f"{_QR_QUERY_URL}?scode={urllib.parse.quote(task_id)}"
+        req = urllib.request.Request(query_url, headers={"User-Agent": "HermesAgent/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+
+        result_data = result.get("data") or {}
+        status = str(result_data.get("status") or "").lower()
+
+        if status == "success":
+            bot_info = result_data.get("bot_info") or {}
+            bot_id = str(bot_info.get("botid") or bot_info.get("bot_id") or "").strip()
+            secret = str(bot_info.get("secret") or "").strip()
+            if bot_id and secret:
+                return {
+                    "ok": True,
+                    "status": "confirmed",
+                    "credentials": {
+                        "bot_id": bot_id,
+                        "secret": secret,
+                    },
+                }
+            return {
+                "ok": True,
+                "status": "pending",
+                "message": "Scan reported success but credentials incomplete",
+            }
+
+        return {"ok": True, "status": "pending"}
+    except Exception as exc:
         return {"ok": False, "error": str(exc)}
 
 
@@ -521,6 +574,8 @@ def _handle_channel_qr_poll(handler, platform: str, body: dict = None) -> bool:
     device_code = body.get("device_code", "")
     if platform == "feishu" and device_code:
         return j(handler, _qr_poll_feishu(device_code))
+    elif platform == "wecom" and task_id:
+        return j(handler, _qr_poll_wecom(task_id))
     elif platform == "weixin" and task_id:
         return j(handler, _qr_poll_weixin(task_id))
     elif platform == "qqbot" and task_id:
