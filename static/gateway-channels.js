@@ -15,12 +15,63 @@
   function esc(s){ if(typeof s!=='string')return ''; return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
   function t(key){ return (typeof window.t==='function') ? window.t(key) : key; }
 
+  function _gwAction(action, statusMsg, buttons){
+    var labels = {start: 'Starting...', stop: 'Stopping...', restart: 'Restarting...'};
+    var targetRunning = (action !== 'stop');
+
+    buttons.forEach(function(b){ b.disabled = true; });
+    statusMsg.style.display = 'block';
+    statusMsg.innerHTML = '<span style="color:var(--warning)">' + labels[action] + '</span>';
+
+    fetch('/api/gateway/' + action, {method:'POST', credentials:'include'})
+      .then(function(r){ return r.json(); })
+      .then(function(data){
+        if(!data.ok){
+          statusMsg.innerHTML = '<span style="color:var(--error)">' + esc(data.message || t('gateway_operation_failed')) + '</span>';
+          buttons.forEach(function(b){ b.disabled = false; });
+          return;
+        }
+        var attempts = 0, maxAttempts = 30;
+        var pollTimer = setInterval(function(){
+          attempts++;
+          fetch('/api/gateway/status', {credentials:'include'})
+            .then(function(r){ return r.json(); })
+            .then(function(s){
+              if(s.running === targetRunning || attempts >= maxAttempts){
+                clearInterval(pollTimer);
+                buttons.forEach(function(b){ b.disabled = false; });
+                statusMsg.style.display = 'none';
+                refreshGatewayPanel();
+              } else {
+                statusMsg.innerHTML = '<span style="color:var(--warning)">' + labels[action] + '</span>';
+              }
+            })
+            .catch(function(){
+              if(attempts >= maxAttempts){
+                clearInterval(pollTimer);
+                buttons.forEach(function(b){ b.disabled = false; });
+                statusMsg.style.display = 'none';
+                refreshGatewayPanel();
+              }
+            });
+        }, 500);
+      })
+      .catch(function(){
+        statusMsg.innerHTML = '<span style="color:var(--error)">' + t('gateway_network_error') + '</span>';
+        buttons.forEach(function(b){ b.disabled = false; });
+      });
+  }
+
   function renderHeader(container, status){
+    var running = status && status.ok && status.running;
+    var configured = status && status.ok && status.configured;
+
     var html = '<div style="padding:16px 12px;border-bottom:1px solid var(--border)">';
     html += '<div style="font-size:14px;font-weight:600;margin-bottom:8px">' + t('settings_tab_gateway') + '</div>';
+    html += '<div id="gwStatusMsg" style="font-size:11px;margin-bottom:6px;display:none"></div>';
     if(!status || !status.ok){
       html += '<div style="display:flex;align-items:center;gap:8px"><span style="width:8px;height:8px;border-radius:50%;background:var(--warning,#f59e0b);display:inline-block"></span><span style="font-size:13px;color:var(--warning)">' + t('gateway_status_unknown') + '</span></div>';
-    } else if(status.running){
+    } else if(running){
       html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span style="width:8px;height:8px;border-radius:50%;background:var(--success,#22c55e);display:inline-block"></span><span style="font-size:13px;font-weight:500;color:var(--success)">' + t('gateway_status_running') + '</span></div>';
       if(status.uptime_seconds){
         var h = Math.floor(status.uptime_seconds/3600);
@@ -30,7 +81,7 @@
       html += '<div style="display:flex;gap:6px;margin-bottom:8px"><button class="gw-btn gw-btn-stop" style="padding:5px 14px;background:var(--error,#ef4444);color:var(--text,#fff);border:none;border-radius:6px;cursor:pointer;font-size:12px">' + t('gateway_btn_stop') + '</button>';
       html += '<button class="gw-btn gw-btn-restart" style="padding:5px 14px;background:var(--code-bg);color:var(--text);border:1px solid var(--border);border-radius:6px;cursor:pointer;font-size:12px">' + t('gateway_btn_restart') + '</button></div>';
       html += '<div style="font-size:10px;color:var(--muted);font-style:italic">' + t('gateway_restart_note') + '</div>';
-    } else if(status.configured){
+    } else if(configured){
       html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span style="width:8px;height:8px;border-radius:50%;background:var(--error,#ef4444);display:inline-block"></span><span style="font-size:13px;font-weight:500;color:var(--error)">' + t('gateway_status_stopped') + '</span></div>';
       html += '<button class="gw-btn gw-btn-start" style="padding:5px 14px;background:var(--accent);color:var(--text,#fff);border:none;border-radius:6px;cursor:pointer;font-size:12px">' + t('gateway_btn_start') + '</button>';
     } else {
@@ -39,14 +90,17 @@
     html += '</div>';
     container.innerHTML = html;
 
+    var statusMsg = document.getElementById('gwStatusMsg');
+    var allBtns = container.querySelectorAll('.gw-btn');
+
     container.querySelector('.gw-btn-start') && container.querySelector('.gw-btn-start').addEventListener('click',function(){
-      fetch('/api/gateway/start',{method:'POST',credentials:'include'}).then(function(){ refreshGatewayPanel(); });
+      _gwAction('start', statusMsg, allBtns);
     });
     container.querySelector('.gw-btn-stop') && container.querySelector('.gw-btn-stop').addEventListener('click',function(){
-      fetch('/api/gateway/stop',{method:'POST',credentials:'include'}).then(function(){ refreshGatewayPanel(); });
+      _gwAction('stop', statusMsg, allBtns);
     });
     container.querySelector('.gw-btn-restart') && container.querySelector('.gw-btn-restart').addEventListener('click',function(){
-      fetch('/api/gateway/restart',{method:'POST',credentials:'include'}).then(function(){ refreshGatewayPanel(); });
+      _gwAction('restart', statusMsg, allBtns);
     });
   }
 
@@ -110,7 +164,7 @@
     container.querySelectorAll('.gw-toggle').forEach(function(cb){
       cb.addEventListener('change', function(){
         var plat = cb.getAttribute('data-platform');
-        fetch('/api/gateway/channels/'+plat,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled: cb.checked}),credentials:'include'}).then(function(r){return r.json();}).then(function(d){
+        fetch('/api/gateway/channels/'+plat,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled: cb.checked}),credentials:'include'}).then(function(r){return r.json();}).then(function(d){
           if(d.ok){ refreshGatewayPanel(); } else { cb.checked = !cb.checked; }
         }).catch(function(){ cb.checked = !cb.checked; });
       });
@@ -167,7 +221,7 @@
       var statusDiv = document.getElementById('gwFormStatus');
       statusDiv.style.display = 'block';
       statusDiv.innerHTML = '<span style="color:var(--muted)">Saving...</span>';
-      fetch('/api/gateway/channels/'+platformId,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),credentials:'include'}).then(function(r){return r.json();}).then(function(d){
+      fetch('/api/gateway/channels/'+platformId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),credentials:'include'}).then(function(r){return r.json();}).then(function(d){
         if(d.ok){ close(); refreshGatewayPanel(); }
         else { statusDiv.innerHTML = '<span style="color:var(--error)">'+esc(d.error||'Failed to save')+'</span>'; }
       }).catch(function(){ statusDiv.innerHTML = '<span style="color:var(--error)">Network error</span>'; });
@@ -234,7 +288,41 @@
             if(d.status === 'confirmed'){
               document.getElementById('gwQRStatus').innerHTML = '<span style="color:var(--success);font-weight:600">' + t('gateway_scan_confirmed') + '</span>';
               if(window._gwQrPollTimer) clearInterval(window._gwQrPollTimer);
-              setTimeout(function(){ close(); refreshGatewayPanel(); }, 1500);
+              // Save credentials based on platform type
+              var creds = d.credentials || {};
+              console.log('Platform', platformId, 'credentials received:', creds);
+              var saveBody = {enabled: true};
+              if(platformId === 'feishu'){
+                if(creds.app_id) saveBody.app_id = creds.app_id;
+                if(creds.app_secret) saveBody.app_secret = creds.app_secret;
+              } else if(platformId === 'wecom'){
+                if(creds.bot_id) saveBody.bot_id = creds.bot_id;
+                if(creds.secret) saveBody.secret = creds.secret;
+              } else if(platformId === 'weixin'){
+                console.log('Weixin credentials - token:', creds.token, 'account_id:', creds.account_id);
+                if(creds.token) saveBody.token = creds.token;
+                if(creds.account_id) saveBody.account_id = creds.account_id;
+              } else if(platformId === 'qqbot'){
+                console.log('QQ credentials received:', creds);
+                if(creds.app_id) saveBody.app_id = creds.app_id;
+                if(creds.client_secret) saveBody.client_secret = creds.client_secret;
+                console.log('QQ saveBody:', saveBody);
+              }
+              console.log('Final saveBody for', platformId, ':', saveBody);
+              fetch('/api/gateway/channels/'+platformId,{
+                method:'POST',
+                headers:{'Content-Type':'application/json'},
+                body:JSON.stringify(saveBody),
+                credentials:'include'
+              }).then(function(r){return r.json();}).then(function(d){
+                if(d.ok){
+                  setTimeout(function(){ close(); refreshGatewayPanel(); }, 800);
+                } else {
+                  document.getElementById('gwQRStatus').innerHTML = '<span style="color:var(--error)">Save failed: '+esc(d.error||'Unknown error')+'</span>';
+                }
+              }).catch(function(){
+                document.getElementById('gwQRStatus').innerHTML = '<span style="color:var(--error)">Network error while saving</span>';
+              });
             } else if(d.status === 'expired'){
               document.getElementById('gwQRStatus').innerHTML = '<span style="color:var(--error)">' + t('gateway_qr_expired') + '</span>';
               if(window._gwQrPollTimer) clearInterval(window._gwQrPollTimer);
