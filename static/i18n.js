@@ -889,6 +889,7 @@ const LOCALES = {
     onboarding_skip: 'Skip setup',
     onboarding_skipped: 'Setup skipped — using existing config.',
     onboarding_open: 'Open Hermes',
+    onboarding_custom_setup_help: 'Configure a custom OpenAI-compatible provider. Enter the Base URL from your provider dashboard or local server logs, then test the connection to fetch available models.',
     onboarding_step_system_title: 'System check',
     onboarding_step_system_desc: 'Verify Hermes Agent and config visibility.',
     onboarding_step_setup_title: 'Provider setup',

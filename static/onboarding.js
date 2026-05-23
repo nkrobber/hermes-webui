@@ -1,4 +1,4 @@
-const ONBOARDING={status:null,step:0,steps:['system','setup','workspace','password','gateway','finish'],form:{provider:'openrouter',workspace:'',model:'',password:'',apiKey:'',baseUrl:''},active:false,probe:{status:'idle',error:null,detail:'',models:null,probedKey:''},configuredPlatforms:[]};
+const ONBOARDING={status:null,step:0,steps:['system','setup','workspace','password','gateway','finish'],form:{provider:'openrouter',workspace:'',model:'',password:'',apiKey:'',baseUrl:'',customProviderName:''},active:false,probe:{status:'idle',error:null,detail:'',models:null,probedKey:''},customProbe:{status:'idle',models:null},configuredPlatforms:[]};
 const _GW_PLATFORMS=(typeof window.getGatewayPlatforms==='function'?window.getGatewayPlatforms().map(function(p){return{id:p.id,label:p.label,hasQR:p.hasQR};}):[{id:'feishu',label:'飞书',hasQR:true},{id:'dingtalk',label:'钉钉',hasQR:false},{id:'weixin',label:'微信',hasQR:true},{id:'wecom',label:'企业微信',hasQR:true},{id:'qqbot',label:'QQ',hasQR:true}]);
 
 // ── Onboarding base-URL probe (#1499) ───────────────────────────────────────
@@ -63,6 +63,60 @@ async function _runOnboardingProbe({force=false}={}){
 function _scheduleOnboardingProbe(){
   if(_onboardingProbeTimer)clearTimeout(_onboardingProbeTimer);
   _onboardingProbeTimer=setTimeout(()=>{_runOnboardingProbe();},400);
+}
+
+var _onboardingCustomProbeTimer=null;
+function _scheduleOnboardingCustomProbe(){
+  if(_onboardingCustomProbeTimer)clearTimeout(_onboardingCustomProbeTimer);
+  _onboardingCustomProbeTimer=setTimeout(function(){_runOnboardingCustomProbe();},400);
+}
+async function _runOnboardingCustomProbe(){
+  var baseUrl=(ONBOARDING.form.baseUrl||'').trim();
+  if(!baseUrl){ONBOARDING.customProbe={status:'idle',models:null};_updateOnboardingCpProbeUI();return;}
+  var apiKey=(ONBOARDING.form.apiKey||'').trim();
+  ONBOARDING.customProbe={status:'probing',models:null};
+  _updateOnboardingCpProbeUI();
+  try{
+    var res=await fetch('/api/custom-providers/probe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({base_url:baseUrl,api_key:apiKey||undefined}),credentials:'include'}).then(function(r){return r.json();});
+    if(res&&res.ok&&Array.isArray(res.models)&&res.models.length){
+      ONBOARDING.customProbe={status:'ok',models:res.models};
+      _renderOnboardingCpModelDropdown(res.models);
+    }else{
+      ONBOARDING.customProbe={status:'error',models:null};
+    }
+  }catch(e){
+    ONBOARDING.customProbe={status:'error',models:null};
+  }
+  _updateOnboardingCpProbeUI();
+}
+function _updateOnboardingCpProbeUI(){
+  var el=document.getElementById('onboardingCpProbeStatus');
+  if(!el)return;
+  var s=ONBOARDING.customProbe;
+  if(s.status==='idle'){el.textContent='';return;}
+  if(s.status==='probing'){el.textContent=t('onboarding_probe_probing');el.style.color='var(--muted)';return;}
+  if(s.status==='ok'){el.textContent=t('custom_provider_models_found',s.models.length);el.style.color='var(--success)';return;}
+  el.textContent=t('onboarding_probe_error_generic')||'Could not reach the configured base URL.';el.style.color='var(--error)';
+}
+function _renderOnboardingCpModelDropdown(models){
+  var dd=document.getElementById('onboardingCpModelDropdown');
+  if(!dd)return;
+  dd.innerHTML='';
+  models.forEach(function(m){
+    var opt=document.createElement('div');
+    opt.textContent=m.label||m.id;
+    opt.style.cssText='padding:6px 12px;cursor:pointer;font-size:13px';
+    opt.onmouseover=function(){opt.style.background='var(--accent)';};
+    opt.onmouseout=function(){opt.style.background='';};
+    opt.onclick=function(){
+      ONBOARDING.form.model=m.id||m.label;
+      var input=document.getElementById('onboardingCpModel');
+      if(input) input.value=ONBOARDING.form.model;
+      dd.style.display='none';
+    };
+    dd.appendChild(opt);
+  });
+  dd.style.display='';
 }
 
 function _onboardingProbeMessage(probe){
@@ -329,17 +383,35 @@ function _renderOnboardingBody(){
     }
 
     _setOnboardingNotice(system.chat_ready?t('onboarding_notice_setup_already_ready'):t('onboarding_notice_setup_required'),system.chat_ready?'success':'info');
-    body.innerHTML=`
-      <label class="onboarding-field">
-        <span>${t('onboarding_provider_label')}</span>
-        <select id="onboardingProviderSelect" onchange="syncOnboardingProvider(this.value)">${groupedOptions}</select>
-      </label>
-      ${_renderOnboardingApiKeyField()}
-      ${_renderOnboardingProviderOAuthField(provider)}
-      ${_renderOnboardingBaseUrlField(showBaseUrl)}
-      <p class="onboarding-copy">${keyHelp}</p>
-      ${showBaseUrl?`<p class="onboarding-copy">${t('onboarding_base_url_help')}</p>`:''}
-      <p class="onboarding-copy">${esc(setup.unsupported_note||'')||''}</p>`;
+
+    // ── Provider select (always shown) ──
+    var setupHtml='<label class="onboarding-field"><span>'+t('onboarding_provider_label')+'</span><select id="onboardingProviderSelect" onchange="syncOnboardingProvider(this.value)">'+groupedOptions+'</select></label>';
+
+    // ── Custom OpenAI-compatible provider: show layout matching custom-providers.js ──
+    if(selectedId==='custom'){
+      var cpName=esc(ONBOARDING.form.customProviderName||'');
+      var cpBaseUrl=esc(ONBOARDING.form.baseUrl||'');
+      var cpApiKey=esc(ONBOARDING.form.apiKey||'');
+      var cpModel=esc(ONBOARDING.form.model||'');
+      var probeMsg=ONBOARDING.customProbe.status==='ok'?(t('custom_provider_models_found')+' ('+((ONBOARDING.customProbe.models||[]).length)+')'):'';
+      setupHtml+='<div class="onboarding-custom-setup" style="margin-top:12px">'+
+        '<label class="onboarding-field"><span>'+t('custom_provider_name')+'</span><input id="onboardingCpName" value="'+cpName+'" placeholder="my-ollama" oninput="ONBOARDING.form.customProviderName=this.value"></label>'+
+        '<label class="onboarding-field"><span>'+t('onboarding_base_url_label')+'</span><input id="onboardingBaseUrlInput" value="'+cpBaseUrl+'" placeholder="http://localhost:11434/v1" oninput="ONBOARDING.form.baseUrl=this.value;_scheduleOnboardingCustomProbe()"></label>'+
+        '<label class="onboarding-field"><span>'+t('onboarding_api_key_label_optional')+'</span><input id="onboardingApiKeyInput" type="password" value="'+cpApiKey+'" placeholder="'+t('onboarding_api_key_placeholder_optional')+'" oninput="ONBOARDING.form.apiKey=this.value;_scheduleOnboardingCustomProbe()"></label>'+
+        '<label class="onboarding-field"><span>'+t('onboarding_model_label')+'</span><div style="position:relative"><input id="onboardingCpModel" value="'+cpModel+'" placeholder="'+esc(t('onboarding_custom_model_placeholder'))+'" oninput="ONBOARDING.form.model=this.value" style="width:100%;padding:8px 12px;background:var(--input-bg);border:1px solid var(--border2);border-radius:8px;color:var(--text);font-size:13px;box-sizing:border-box">'+
+        '<div id="onboardingCpModelDropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--code-bg);border:1px solid var(--border);border-radius:8px;max-height:200px;overflow-y:auto;z-index:10"></div></div>'+
+        '<div id="onboardingCpProbeStatus" style="font-size:11px;color:var(--muted);margin-top:4px">'+esc(probeMsg)+'</div></label>'+
+        '<div class="onboarding-probe-row"><button type="button" class="onboarding-probe-btn" onclick="_runOnboardingCustomProbe()">'+esc(t('onboarding_probe_test_button'))+'</button></div>'+
+        '<p class="onboarding-copy">'+t('onboarding_custom_setup_help')+'</p></div>';
+    }else{
+      setupHtml+=_renderOnboardingApiKeyField();
+      setupHtml+=_renderOnboardingProviderOAuthField(provider);
+      setupHtml+=_renderOnboardingBaseUrlField(showBaseUrl);
+      setupHtml+='<p class="onboarding-copy">'+esc(keyHelp)+'</p>';
+      if(showBaseUrl) setupHtml+='<p class="onboarding-copy">'+t('onboarding_base_url_help')+'</p>';
+    }
+    setupHtml+='<p class="onboarding-copy">'+esc(setup.unsupported_note||'')+'</p>';
+    body.innerHTML=setupHtml;
     return;
   }
 
@@ -571,6 +643,21 @@ async function _saveOnboardingProviderSetup(){
   // config.yaml if the user accidentally changed the provider dropdown.
   const currentIsOauth=!!(ONBOARDING.status&&ONBOARDING.status.setup&&ONBOARDING.status.setup.current_is_oauth);
   if(isUnchanged && !apiKey && ((ONBOARDING.status.system||{}).chat_ready || currentIsOauth)) return;
+
+  // For custom OpenAI-compatible provider, save via /api/custom-providers first,
+  // then /api/onboarding/setup to mark completion.
+  if(provider==='custom'){
+    const name=(ONBOARDING.form.customProviderName||'').trim()||'custom-openai';
+    const cpBody={name:name,base_url:baseUrl,api_key:apiKey,model:model};
+    const cpRes=await fetch('/api/custom-providers',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cpBody),credentials:'include'}).then(function(r){return r.json();});
+    if(!cpRes.ok) throw new Error(cpRes.error||'Failed to create custom provider');
+    // Mark onboarding complete — POST /api/onboarding/setup with custom:<name>
+    // hits the unsupported-provider branch which just marks complete.
+    const status=await api('/api/onboarding/setup',{method:'POST',body:JSON.stringify({provider:'custom:'+name,model:model})});
+    ONBOARDING.status=status;
+    return;
+  }
+
   const body={provider,model};
   if(apiKey) body.api_key=apiKey;
   if(baseUrl) body.base_url=baseUrl;
@@ -633,23 +720,25 @@ async function nextOnboardingStep(){
       ONBOARDING.form.provider=(($('onboardingProviderSelect')||{}).value||ONBOARDING.form.provider||'').trim();
       ONBOARDING.form.apiKey=(($('onboardingApiKeyInput')||{}).value||'').trim();
       ONBOARDING.form.baseUrl=(($('onboardingBaseUrlInput')||{}).value||ONBOARDING.form.baseUrl||'').trim();
+      ONBOARDING.form.customProviderName=(($('onboardingCpName')||{}).value||ONBOARDING.form.customProviderName||'').trim();
+      ONBOARDING.form.model=(($('onboardingCpModel')||{}).value||ONBOARDING.form.model||'').trim();
       if(!ONBOARDING.form.provider) throw new Error(t('onboarding_error_provider_required'));
-      if(ONBOARDING.form.provider==='custom' && !ONBOARDING.form.baseUrl) throw new Error(t('onboarding_error_base_url_required'));
-      // For self-hosted providers (requires_base_url=True), gate Continue on a
-      // successful probe of <base_url>/models — otherwise the wizard would
-      // happily persist an unreachable URL and finish in 200ms with no
-      // outbound HTTP, exactly the bug in #1499.  Run the probe synchronously
-      // here, then check status; the probe is idempotent & cached on
-      // (provider, baseUrl, apiKey) so this rarely triggers a second network
-      // call when the user already saw a green banner.
-      const cat=_getOnboardingSetupProvider(ONBOARDING.form.provider);
-      if(cat&&cat.requires_base_url){
+      if(ONBOARDING.form.provider==='custom'){
         if(!ONBOARDING.form.baseUrl) throw new Error(t('onboarding_error_base_url_required'));
-        await _runOnboardingProbe();
-        if(ONBOARDING.probe.status!=='ok'){
-          // Surface the same localized error string the inline banner shows.
-          const msg=_onboardingProbeMessage(ONBOARDING.probe)||t('onboarding_error_probe_failed')||'Could not reach the configured base URL.';
-          throw new Error(msg);
+        if(!ONBOARDING.form.model) throw new Error(t('onboarding_error_model_required')||'Model is required');
+      }else{
+        // For non-custom self-hosted providers (requires_base_url=True), gate Continue on a
+        // successful probe of <base_url>/models — otherwise the wizard would
+        // happily persist an unreachable URL and finish in 200ms with no
+        // outbound HTTP, exactly the bug in #1499.
+        const cat=_getOnboardingSetupProvider(ONBOARDING.form.provider);
+        if(cat&&cat.requires_base_url){
+          if(!ONBOARDING.form.baseUrl) throw new Error(t('onboarding_error_base_url_required'));
+          await _runOnboardingProbe();
+          if(ONBOARDING.probe.status!=='ok'){
+            const msg=_onboardingProbeMessage(ONBOARDING.probe)||t('onboarding_error_probe_failed')||'Could not reach the configured base URL.';
+            throw new Error(msg);
+          }
         }
       }
     }
