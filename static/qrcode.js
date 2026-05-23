@@ -2294,9 +2294,8 @@ var qrcode = function() {
   }
   if (typeof window !== 'undefined') {
       window.qrcode = factory();
+      window.QRErrorCorrectionLevel = QRErrorCorrectionLevel;
   }
 }(function () {
     return qrcode;
 }));
-
-if (typeof window !== 'undefined') { window.QRErrorCorrectionLevel = QRErrorCorrectionLevel; }

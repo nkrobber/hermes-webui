@@ -13215,9 +13215,15 @@ function setLocale(lang) {
 /**
  * Load locale from localStorage (called once at boot, before DOMContentLoaded).
  * Server-persisted preference is applied later in loadSettingsPanel().
+ * window.__DEFAULT_LANG__ (injected into index.html by the server) is checked
+ * first so that the FIRST RUN overlay renders in the configured language even
+ * when there is no localStorage entry yet.
  */
 function loadLocale() {
-  setLocale(resolvePreferredLocale(null, localStorage.getItem('hermes-lang')));
+  setLocale(resolvePreferredLocale(
+    (typeof window !== 'undefined' && window.__DEFAULT_LANG__) || null,
+    localStorage.getItem('hermes-lang')
+  ));
 }
 
 /**

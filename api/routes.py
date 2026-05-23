@@ -3481,11 +3481,15 @@ def handle_get(handler, parsed) -> bool:
             except Exception:
                 csrf_token = ""
 
+            _settings = load_settings()
+            _default_lang = _settings.get("language", "zh")
+
             html = (
                 _INDEX_HTML_PATH.read_text(encoding="utf-8")
                 .replace("__WEBUI_VERSION__", version_token)
                 .replace("__MAX_UPLOAD_BYTES__", str(MAX_UPLOAD_BYTES))
                 .replace("__CSRF_TOKEN_JSON__", json.dumps(csrf_token))
+                .replace("__DEFAULT_LANG_VALUE__", _default_lang)
             )
             return t(
                 handler,
