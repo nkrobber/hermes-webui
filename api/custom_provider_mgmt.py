@@ -82,17 +82,17 @@ def handle_post_custom_providers(handler, body=None) -> bool:
             return bad(handler, "Invalid JSON")
 
     # Validate required fields
-    required = ["name", "base_url", "api_key", "model"]
+    required = ["name", "base_url", "model"]
     for field in required:
         if not body.get(field):
             return bad(handler, f"Missing required field: {field}")
 
     name = body["name"].strip()
     base_url = body["base_url"].strip()
-    api_key = body["api_key"].strip()
+    api_key = body.get("api_key", "").strip()
     model = body["model"].strip()
 
-    if not name or not base_url or not api_key or not model:
+    if not name or not base_url or not model:
         return bad(handler, "Fields cannot be empty")
 
     config_path = _get_config_path()
@@ -117,9 +117,10 @@ def handle_post_custom_providers(handler, body=None) -> bool:
 
     _set_default_model_if_missing(data, name, model)
 
-    # Backup and save
+    # Backup (if config already exists) and save
     import shutil
-    shutil.copy2(config_path, config_path.with_suffix('.yaml.bak'))
+    if config_path.exists():
+        shutil.copy2(config_path, config_path.with_suffix('.yaml.bak'))
     _save_yaml_config_file(config_path, data)
     reload_config()
     invalidate_models_cache()
@@ -140,14 +141,14 @@ def handle_put_custom_providers(handler, body=None) -> bool:
             return bad(handler, "Invalid JSON")
 
     # Validate required fields
-    required = ["name", "base_url", "api_key", "model"]
+    required = ["name", "base_url", "model"]
     for field in required:
         if not body.get(field):
             return bad(handler, f"Missing required field: {field}")
 
     name = body["name"].strip()
     base_url = body["base_url"].strip()
-    api_key = body["api_key"].strip()
+    api_key = body.get("api_key", "").strip()
     model = body["model"].strip()
 
     if not name:
@@ -178,9 +179,10 @@ def handle_put_custom_providers(handler, body=None) -> bool:
 
     _set_default_model_if_missing(data, name, model)
 
-    # Backup and save
+    # Backup (if config already exists) and save
     import shutil
-    shutil.copy2(config_path, config_path.with_suffix('.yaml.bak'))
+    if config_path.exists():
+        shutil.copy2(config_path, config_path.with_suffix('.yaml.bak'))
     _save_yaml_config_file(config_path, data)
     reload_config()
     invalidate_models_cache()
