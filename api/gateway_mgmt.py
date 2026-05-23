@@ -44,9 +44,14 @@ def _read_body(handler) -> dict:
 def _platform_configured(cfg: dict, platform: str) -> bool:
     section = cfg.get(platform, {})
     if not isinstance(section, dict):
+        logger.info("Platform %s: section is not dict: %s", platform, section)
         return False
     required = _PLATFORM_REQUIRED_FIELDS.get(platform, [])
-    return any(section.get(f) for f in required)
+    missing = [f for f in required if not section.get(f)]
+    if missing:
+        logger.info("Platform %s: missing required fields: %s, section: %s", platform, missing, section)
+    # All required fields must be present for the platform to be considered configured
+    return all(section.get(f) for f in required)
 
 
 def _extract_platform(path: str) -> tuple[str | None, str]:
@@ -169,22 +174,57 @@ def _qr_poll_wecom(task_id: str) -> dict:
 
 
 def _qr_poll_feishu(device_code: str) -> dict:
+    """Poll Feishu QR registration status (non-blocking).
+    
+    Returns immediately with current status, does not block waiting for completion.
+    """
     try:
-        from gateway.platforms.feishu import _poll_registration
+        from gateway.platforms.feishu import (
+            _accounts_base_url,
+            _REGISTRATION_PATH,
+            _ONBOARD_REQUEST_TIMEOUT_S,
+        )
+        from urllib.request import Request, urlopen
+        from urllib.error import HTTPError
+        from urllib.parse import urlencode
+        import json
     except ImportError as exc:
         return {"ok": False, "error": str(exc)}
+    
     try:
-        result = _poll_registration(device_code=device_code, interval=5, expire_in=600)
-        if result:
+        base_url = _accounts_base_url("feishu")
+        url = f"{base_url}{_REGISTRATION_PATH}"
+        data = urlencode({
+            "action": "poll",
+            "device_code": device_code,
+            "tp": "ob_app",
+        }).encode("utf-8")
+        req = Request(url, data=data, headers={"Content-Type": "application/x-www-form-urlencoded"})
+        
+        with urlopen(req, timeout=_ONBOARD_REQUEST_TIMEOUT_S) as resp:
+            res = json.loads(resp.read().decode("utf-8"))
+        
+        # Check for success
+        if res.get("client_id") and res.get("client_secret"):
+            user_info = res.get("user_info") or {}
+            tenant_brand = user_info.get("tenant_brand")
+            domain = "lark" if tenant_brand == "lark" else "feishu"
             return {
                 "ok": True,
                 "status": "confirmed",
                 "credentials": {
-                    "app_id": result.get("app_id", ""),
-                    "app_secret": result.get("app_secret", ""),
-                    "domain": result.get("domain", "feishu"),
+                    "app_id": res["client_id"],
+                    "app_secret": res["client_secret"],
+                    "domain": domain,
                 },
             }
+        
+        # Check for terminal errors
+        error = res.get("error", "")
+        if error in {"access_denied", "expired_token"}:
+            return {"ok": True, "status": "expired"}
+        
+        # Still pending
         return {"ok": True, "status": "pending"}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
@@ -329,10 +369,13 @@ def _qr_begin_qq() -> dict:
     try:
         task_id, aes_key = _create_bind_task(timeout=30)
         qr_url = build_connect_url(task_id)
+        # Encode aes_key into task_id for later decryption
+        import base64
+        combined = f"{task_id}:{base64.b64encode(aes_key.encode()).decode()}"
         return {
             "ok": True,
             "qr_data_url": qr_url,
-            "task_id": task_id,
+            "task_id": combined,
             "expires_in": 600,
         }
     except Exception as exc:
@@ -343,7 +386,7 @@ def _qr_begin_qq() -> dict:
 def _qr_poll_qq(task_id: str) -> dict:
     """Poll QQBot QR registration status.
 
-    task_id is the bind task_id from _qr_begin_qq.
+    task_id is the bind task_id from _qr_begin_qq (includes aes_key).
     """
     if not task_id:
         return {"ok": False, "error": "missing task_id"}
@@ -353,17 +396,28 @@ def _qr_poll_qq(task_id: str) -> dict:
             _poll_bind_result,
             BindStatus,
         )
-        from gateway.platforms.qqbot.crypto import decrypt_secret, generate_bind_key
+        from gateway.platforms.qqbot.crypto import decrypt_secret
     except ImportError:
         return {"ok": False, "error": "qqbot module unavailable"}
 
     try:
+        # Parse task_id and aes_key
+        import base64
+        if ":" in task_id:
+            actual_task_id, aes_key_b64 = task_id.rsplit(":", 1)
+            aes_key = base64.b64decode(aes_key_b64).decode()
+        else:
+            return {"ok": False, "error": "invalid task_id format"}
+
         status, app_id, encrypted_secret, user_openid = _poll_bind_result(
-            task_id, timeout=600
+            actual_task_id, timeout=30
         )
 
+        # Debug logging
+        logger.info("QQ poll status: %s (value: %s), app_id: %s", status, int(status), app_id)
+
         if status == BindStatus.COMPLETED:
-            client_secret = decrypt_secret(encrypted_secret, generate_bind_key())
+            client_secret = decrypt_secret(encrypted_secret, aes_key)
             return {
                 "ok": True,
                 "status": "confirmed",
@@ -373,9 +427,12 @@ def _qr_poll_qq(task_id: str) -> dict:
                     "user_openid": user_openid,
                 },
             }
+        elif status == BindStatus.EXPIRED:
+            return {"ok": True, "status": "expired"}
 
         return {"ok": True, "status": "pending"}
     except Exception as exc:
+        logger.exception("QQ poll error: %s", exc)
         return {"ok": False, "error": str(exc)}
 
 
@@ -405,6 +462,14 @@ def _handle_status(handler) -> bool:
     except ImportError:
         pass
 
+    # Get configured platforms from config
+    cfg_path = _get_config_path()
+    cfg = _load_yaml_config_file(cfg_path)
+    platform_names = []
+    for p in sorted(_PLATFORMS):
+        if _platform_configured(cfg, p):
+            platform_names.append(p)
+
     if alive is True:
         running = True
         configured = True
@@ -413,14 +478,8 @@ def _handle_status(handler) -> bool:
         configured = True
     else:
         running = pid is not None
-        configured = bool(pid)
-
-    cfg_path = _get_config_path()
-    cfg = _load_yaml_config_file(cfg_path)
-    platform_names = []
-    for p in sorted(_PLATFORMS):
-        if _platform_configured(cfg, p):
-            platform_names.append(p)
+        # Gateway is configured if any platform is configured, regardless of running state
+        configured = len(platform_names) > 0
 
     return j(handler, {
         "ok": True,
@@ -434,6 +493,24 @@ def _handle_status(handler) -> bool:
 
 def _handle_start(handler) -> bool:
     try:
+        # Load .env file before starting gateway so subprocess inherits env vars
+        try:
+            from api.config import get_env_file_path
+            env_path = get_env_file_path()
+            if env_path and env_path.exists():
+                env_text = env_path.read_text(encoding="utf-8")
+                for line in env_text.splitlines():
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        key, value = line.split("=", 1)
+                        key = key.strip()
+                        value = value.strip()
+                        # Only set if not already set (respect existing env)
+                        if key and value and key not in os.environ:
+                            os.environ[key] = value
+        except Exception as e:
+            logger.warning("Failed to preload .env for gateway start: %s", e)
+        
         import subprocess
         proc = subprocess.Popen(
             ["hermes", "gateway", "start"],
@@ -448,34 +525,51 @@ def _handle_start(handler) -> bool:
 
 def _handle_stop(handler) -> bool:
     try:
-        from gateway.status import get_running_pid
-        pid = get_running_pid()
-    except ImportError:
-        pid = None
-    if pid:
+        import subprocess
+        result = subprocess.run(
+            ["hermes", "gateway", "stop"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0:
+            return j(handler, {"ok": True, "message": "Gateway stopping..."})
+        logger.warning("hermes gateway stop failed (rc=%d, stderr=%s), falling back to SIGTERM",
+                       result.returncode, result.stderr.strip())
         try:
+            from gateway.status import get_running_pid
+            pid = get_running_pid()
+        except ImportError:
+            pid = None
+        if pid:
             os.kill(pid, signal.SIGTERM)
             return j(handler, {"ok": True, "message": "Gateway stopping..."})
-        except ProcessLookupError:
-            return j(handler, {"ok": True, "message": "Gateway was not running"})
-        except Exception as exc:
-            return j(handler, {"ok": False, "message": str(exc)})
-    return j(handler, {"ok": False, "message": "Gateway not running"})
+        return j(handler, {"ok": False, "message": "Gateway not running"})
+    except subprocess.TimeoutExpired:
+        return j(handler, {"ok": False, "message": "Gateway stop timed out"})
+    except Exception as exc:
+        return j(handler, {"ok": False, "message": str(exc)})
 
 
 def _handle_restart(handler) -> bool:
     try:
-        from gateway.status import get_running_pid
-        pid = get_running_pid()
-    except ImportError:
-        pid = None
-    if pid:
+        import subprocess
+        subprocess.run(
+            ["hermes", "gateway", "stop"],
+            capture_output=True, timeout=30,
+        )
         try:
-            os.kill(pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        except Exception as exc:
-            return j(handler, {"ok": False, "message": str(exc)})
+            from gateway.status import get_running_pid
+            pid = get_running_pid()
+        except ImportError:
+            pid = None
+        if pid:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            except Exception:
+                pass
+    except Exception:
+        pass
     try:
         import subprocess
         subprocess.Popen(
@@ -501,26 +595,159 @@ def _handle_channels_list(handler) -> bool:
     return j(handler, {"ok": True, "channels": channels})
 
 
+# Platform credential to env var mapping
+_PLATFORM_ENV_MAPPING = {
+    "feishu": {
+        "app_id": "FEISHU_APP_ID",
+        "app_secret": "FEISHU_APP_SECRET",
+        "verification_token": "FEISHU_VERIFICATION_TOKEN",
+        "encrypt_key": "FEISHU_ENCRYPT_KEY",
+    },
+    "wecom": {
+        "bot_id": "WECOM_BOT_ID",
+        "secret": "WECOM_SECRET",
+    },
+    "weixin": {
+        "token": "WEIXIN_TOKEN",
+        "account_id": "WEIXIN_ACCOUNT_ID",
+    },
+    "qqbot": {
+        "app_id": "QQ_APP_ID",
+        "client_secret": "QQ_CLIENT_SECRET",
+    },
+    "dingtalk": {
+        "client_id": "DINGTALK_CLIENT_ID",
+        "client_secret": "DINGTALK_CLIENT_SECRET",
+    },
+}
+
+
+def _update_env_file(platform: str, credentials: dict) -> None:
+    """Sync platform credentials to ~/.hermes/.env file."""
+    try:
+        from api.config import get_env_file_path
+        env_path = get_env_file_path()
+        logger.info("Updating .env for platform %s, credentials: %s, env_path: %s", platform, credentials, env_path)
+        if not env_path:
+            logger.warning("No env_path returned")
+            return
+        
+        # Read existing .env content
+        env_lines = []
+        if env_path.exists():
+            env_lines = env_path.read_text(encoding="utf-8").splitlines()
+            logger.info("Existing .env has %d lines", len(env_lines))
+        
+        # Build a set of existing keys for quick lookup
+        existing_keys = set()
+        for line in env_lines:
+            if "=" in line and not line.strip().startswith("#"):
+                key = line.split("=", 1)[0].strip()
+                existing_keys.add(key)
+        
+        # Add new credential lines
+        env_mapping = _PLATFORM_ENV_MAPPING.get(platform, {})
+        logger.info("Env mapping for %s: %s", platform, env_mapping)
+        for field, value in credentials.items():
+            env_var = env_mapping.get(field)
+            logger.info("Field %s -> env_var %s = %s", field, env_var, "[SET]" if (env_var and value) else "[SKIP]")
+            if env_var and value:
+                # Remove existing line for this var if present
+                env_lines = [line for line in env_lines if not line.strip().startswith(f"{env_var}=")]
+                # Add new line
+                env_lines.append(f"{env_var}={value}")
+        
+        # Write back
+        env_content = "\n".join(env_lines)
+        if env_lines and not env_content.endswith("\n"):
+            env_content += "\n"
+        env_path.write_text(env_content, encoding="utf-8")
+        logger.info("Wrote .env file with %d lines", len(env_lines))
+        
+        # Update current process environment
+        for field, value in credentials.items():
+            env_var = env_mapping.get(field)
+            if env_var and value:
+                os.environ[env_var] = value
+    except Exception as e:
+        logger.warning("Failed to update .env file: %s", e)
+
+
 def _handle_channel_update(handler, platform: str, body: dict = None) -> bool:
     if body is None:
         body = _read_body(handler)
+    logger.info("Channel update for %s, body: %s", platform, body)
     cfg = _load_yaml_config_file(_get_config_path())
     section = cfg.get(platform, {})
     if not isinstance(section, dict):
         section = {}
-    for key in body:
-        if key == "enabled":
-            section["enabled"] = bool(body[key])
-        elif key in _PLATFORM_REQUIRED_FIELDS.get(platform, []):
-            val = (body[key] or "").strip()
-            if val:
-                section[key] = val
-        elif key in {"verification_token", "bot_id", "token", "client_id", "client_secret", "app_id", "app_secret"}:
-            val = (body[key] or "").strip()
-            if val:
-                section[key] = val
+    
+    # Handle enabled flag
+    if "enabled" in body:
+        section["enabled"] = bool(body["enabled"])
+    
+    # Platform-specific field handling
+    credentials_to_sync = {}
+    
+    if platform == "weixin":
+        # Weixin fields: token, account_id
+        for field in ["token", "account_id"]:
+            if field in body:
+                val = (body[field] or "").strip()
+                if val:
+                    section[field] = val
+                    credentials_to_sync[field] = val
+                    logger.info("Weixin: saved %s", field)
+    
+    elif platform == "wecom":
+        # WeCom fields: bot_id, secret
+        for field in ["bot_id", "secret"]:
+            if field in body:
+                val = (body[field] or "").strip()
+                if val:
+                    section[field] = val
+                    credentials_to_sync[field] = val
+                    logger.info("WeCom: saved %s", field)
+    
+    elif platform == "feishu":
+        # Feishu fields: app_id, app_secret, verification_token
+        for field in ["app_id", "app_secret", "verification_token"]:
+            if field in body:
+                val = (body[field] or "").strip()
+                if val:
+                    section[field] = val
+                    credentials_to_sync[field] = val
+                    logger.info("Feishu: saved %s", field)
+    
+    elif platform == "qqbot":
+        # QQBot fields: app_id, client_secret
+        for field in ["app_id", "client_secret"]:
+            if field in body:
+                val = (body[field] or "").strip()
+                if val:
+                    section[field] = val
+                    credentials_to_sync[field] = val
+                    logger.info("QQBot: saved %s", field)
+    
+    elif platform == "dingtalk":
+        # DingTalk fields: client_id, client_secret
+        for field in ["client_id", "client_secret"]:
+            if field in body:
+                val = (body[field] or "").strip()
+                if val:
+                    section[field] = val
+                    credentials_to_sync[field] = val
+                    logger.info("DingTalk: saved %s", field)
+    
+    logger.info("Final section for %s: %s", platform, section)
     cfg[platform] = section
     _save_config(cfg)
+    
+    # Sync credentials to .env file
+    if credentials_to_sync:
+        logger.info("Syncing to .env for %s: %s", platform, credentials_to_sync)
+        _update_env_file(platform, credentials_to_sync)
+    
     return j(handler, {"ok": True})
 
 
@@ -543,6 +770,23 @@ def _handle_channel_clear(handler, platform: str) -> bool:
     cfg = _load_yaml_config_file(_get_config_path())
     cfg[platform] = {"enabled": False}
     _save_config(cfg)
+    
+    # Also clear credentials from .env
+    try:
+        from api.config import get_env_file_path
+        env_path = get_env_file_path()
+        if env_path and env_path.exists():
+            env_lines = env_path.read_text(encoding="utf-8").splitlines()
+            env_mapping = _PLATFORM_ENV_MAPPING.get(platform, {})
+            env_vars_to_remove = set(env_mapping.values())
+            env_lines = [line for line in env_lines if not any(line.strip().startswith(f"{var}=") for var in env_vars_to_remove)]
+            env_content = "\n".join(env_lines)
+            if env_lines and not env_content.endswith("\n"):
+                env_content += "\n"
+            env_path.write_text(env_content, encoding="utf-8")
+    except Exception as e:
+        logger.warning("Failed to clear .env credentials: %s", e)
+    
     return j(handler, {"ok": True})
 
 
@@ -613,7 +857,7 @@ def handle_gateway_api(handler, parsed, body: dict = None) -> bool:
     if subpath == "" or subpath == "/":
         if handler.command == "GET":
             return _handle_channels_list(handler)
-        if handler.command == "PUT":
+        if handler.command == "PUT" or handler.command == "POST":
             return _handle_channel_update(handler, platform, body)
         return False
 

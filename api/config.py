@@ -272,6 +272,19 @@ def _get_config_path() -> Path:
         return HOME / ".hermes" / "config.yaml"
 
 
+def get_env_file_path() -> Path:
+    """Return .env path for the active profile."""
+    env_override = os.getenv("HERMES_ENV_PATH")
+    if env_override:
+        return Path(env_override).expanduser()
+    try:
+        from api.profiles import get_active_hermes_home
+
+        return get_active_hermes_home() / ".env"
+    except ImportError:
+        return HOME / ".hermes" / ".env"
+
+
 _WEBUI_SESSION_SAVE_MODES = {"deferred", "eager"}
 _DEFAULT_WEBUI_SESSION_SAVE_MODE = "deferred"
 
