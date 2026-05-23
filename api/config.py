@@ -692,6 +692,7 @@ _PROVIDER_DISPLAY = {
     "anthropic": "Anthropic",
     "openai": "OpenAI",
     "openai-codex": "OpenAI Codex",
+    "xai-oauth": "xAI Grok OAuth",
     "copilot": "GitHub Copilot",
     "zai": "Z.AI / GLM",
     "kimi-coding": "Kimi / Moonshot",
@@ -972,6 +973,49 @@ def _custom_endpoint_slugs_for_base_url(value: object) -> set[str]:
     return {f"custom:{host}:{port}", f"custom:{host}-{port}"}
 
 
+_LEGACY_CUSTOM_API_KEY_ENV_WARNED: set[str] = set()
+
+
+def _api_key_env_name(provider_id: object) -> str:
+    """Return the POSIX-safe default API-key env var for a custom provider id."""
+    sanitized = re.sub(r"[^A-Za-z0-9]", "_", str(provider_id or "")).upper().strip("_")
+    if not sanitized:
+        sanitized = "CUSTOM"
+    if not sanitized.startswith("CUSTOM_"):
+        sanitized = f"CUSTOM_{sanitized}"
+    return f"{sanitized}_API_KEY"
+
+
+def _legacy_custom_api_key_env_name(provider_id: object) -> str:
+    """Return the pre-#2541 custom-provider env hint shape, if any."""
+    raw = str(provider_id or "").strip().upper()
+    if not raw:
+        return ""
+    return f"{raw}_API_KEY"
+
+
+def _lookup_custom_api_key_env(provider_id: object) -> str | None:
+    """Look up sanitized custom-provider env first, then legacy broken shape."""
+    env_name = _api_key_env_name(provider_id)
+    api_key = os.getenv(env_name, "").strip()
+    if api_key:
+        return api_key
+
+    legacy_env_name = _legacy_custom_api_key_env_name(provider_id)
+    if legacy_env_name and legacy_env_name != env_name:
+        legacy_key = os.getenv(legacy_env_name, "").strip()
+        if legacy_key:
+            if legacy_env_name not in _LEGACY_CUSTOM_API_KEY_ENV_WARNED:
+                _LEGACY_CUSTOM_API_KEY_ENV_WARNED.add(legacy_env_name)
+                logger.warning(
+                    "Custom provider API key env var %s is deprecated; use %s instead",
+                    legacy_env_name,
+                    env_name,
+                )
+            return legacy_key
+    return None
+
+
 def _named_custom_provider_slug_for_base_url(
     base_url: object,
     config_obj: dict | None = None,
@@ -1164,6 +1208,9 @@ _PROVIDER_MODELS = {
     ],
     # xAI — prefix used in OpenRouter model IDs (x-ai/grok-4-20)
     "x-ai": [
+        {"id": "grok-4.20", "label": "Grok 4.20"},
+    ],
+    "xai-oauth": [
         {"id": "grok-4.20", "label": "Grok 4.20"},
     ],
 }
@@ -1841,7 +1888,7 @@ def resolve_custom_provider_connection(provider_id: str) -> tuple[str | None, st
     # cases after profile switches or runtime config edits.
     cfg_data = get_config()
 
-    def _resolve_key(raw_api_key, raw_key_env) -> str | None:
+    def _resolve_key(raw_api_key, raw_key_env, provider_hint=None) -> str | None:
         api_key = None
         if raw_api_key is not None:
             key_text = str(raw_api_key).strip()
@@ -1853,6 +1900,8 @@ def resolve_custom_provider_connection(provider_id: str) -> tuple[str | None, st
             key_env = str(raw_key_env or "").strip()
             if key_env:
                 api_key = os.getenv(key_env, "").strip() or None
+        if not api_key and provider_hint:
+            api_key = _lookup_custom_api_key_env(provider_hint)
         return api_key
 
     custom_providers = cfg_data.get("custom_providers", [])
@@ -1870,7 +1919,7 @@ def resolve_custom_provider_connection(provider_id: str) -> tuple[str | None, st
             continue
 
         base_url = str(entry.get("base_url") or "").strip() or None
-        api_key = _resolve_key(entry.get("api_key"), entry.get("key_env"))
+        api_key = _resolve_key(entry.get("api_key"), entry.get("key_env"), pid)
         return api_key, base_url
 
     # If exactly one custom provider is configured, use it as a pragmatic
@@ -1878,7 +1927,7 @@ def resolve_custom_provider_connection(provider_id: str) -> tuple[str | None, st
     if len(custom_providers) == 1 and isinstance(custom_providers[0], dict):
         entry = custom_providers[0]
         return (
-            _resolve_key(entry.get("api_key"), entry.get("key_env")),
+            _resolve_key(entry.get("api_key"), entry.get("key_env"), pid),
             str(entry.get("base_url") or "").strip() or None,
         )
 
@@ -1900,11 +1949,11 @@ def resolve_custom_provider_connection(provider_id: str) -> tuple[str | None, st
 
     fallback_key = None
     if isinstance(provider_specific, dict):
-        fallback_key = _resolve_key(provider_specific.get("api_key"), provider_specific.get("key_env"))
+        fallback_key = _resolve_key(provider_specific.get("api_key"), provider_specific.get("key_env"), pid)
     if not fallback_key and isinstance(provider_custom, dict):
-        fallback_key = _resolve_key(provider_custom.get("api_key"), provider_custom.get("key_env"))
+        fallback_key = _resolve_key(provider_custom.get("api_key"), provider_custom.get("key_env"), pid)
     if not fallback_key and isinstance(model_cfg, dict) and model_provider in {"custom", pid, slug}:
-        fallback_key = _resolve_key(model_cfg.get("api_key"), model_cfg.get("key_env"))
+        fallback_key = _resolve_key(model_cfg.get("api_key"), model_cfg.get("key_env"), pid)
 
     if fallback_key or fallback_base:
         return fallback_key, fallback_base or None
@@ -3087,101 +3136,99 @@ def get_available_models() -> dict:
 
             return ""
 
-        # 4. Fetch models from custom endpoint if base_url is configured
-        auto_detected_models = []
-        auto_detected_models_by_provider: dict[str, list[dict]] = {}
-        if cfg_base_url:
+        def _models_endpoint_for_base_url(base_url: str) -> str:
+            base = str(base_url or "").strip().rstrip("/")
+            if base.endswith("/v1"):
+                return base + "/models"
+            return base + "/v1/models"
+
+        def _extract_model_entries_from_payload(data: object, provider: str) -> list[dict]:
+            models_list = []
+            if isinstance(data, dict):
+                if "data" in data and isinstance(data["data"], list):
+                    models_list = data["data"]
+                elif "models" in data and isinstance(data["models"], list):
+                    models_list = data["models"]
+            models = []
+            seen = set()
+            for model in models_list:
+                if not isinstance(model, dict):
+                    continue
+                model_id = (
+                    model.get("id", "")
+                    or model.get("name", "")
+                    or model.get("model", "")
+                )
+                model_name = model.get("name", "") or model.get("model", "") or model_id
+                model_id = str(model_id or "").strip()
+                model_name = str(model_name or "").strip()
+                if not model_id or not model_name or model_id in seen:
+                    continue
+                seen.add(model_id)
+                label = _format_ollama_label(model_id) if provider in ("ollama", "ollama-cloud") else model_name
+                models.append({"id": model_id, "label": label})
+            return models
+
+        def _custom_endpoint_error(
+            provider: str,
+            exc: Exception,
+            *,
+            code: int | None = None,
+        ) -> dict:
+            provider_label = str(provider or "custom").replace("custom:", "")
+            status_code = code if code is not None else getattr(exc, "code", None)
+            if status_code in (401, 403):
+                return {
+                    "kind": "auth",
+                    "code": int(status_code),
+                    "message": f"Models endpoint returned {status_code} — check the API key for {provider_label}.",
+                }
+            if isinstance(status_code, int):
+                return {
+                    "kind": "http",
+                    "code": int(status_code),
+                    "message": f"Models endpoint returned {status_code} for {provider_label}; see logs.",
+                }
+            return {
+                "kind": "network",
+                "code": None,
+                "message": f"Models endpoint unreachable for {provider_label}; verify base_url.",
+            }
+
+        def _read_custom_endpoint_models(
+            base_url: object,
+            provider: str,
+            *,
+            api_key: object = "",
+            trusted_base_urls: tuple[object, ...] = (),
+        ) -> tuple[list[dict], dict | None]:
+            base = str(base_url or "").strip()
+            if not base:
+                return [], None
             try:
                 import ipaddress
+                import urllib.error
                 import urllib.request
-
-                base_url = cfg_base_url.strip()
-                if base_url.endswith("/v1"):
-                    endpoint_url = base_url + "/models"
-                else:
-                    endpoint_url = base_url.rstrip("/") + "/v1/models"
-
-                configured_provider = _configured_provider_for_base_url(base_url)
-                provider = configured_provider or "custom"
-                provider_from_config = bool(configured_provider)
-                parsed = urlparse(base_url if "://" in base_url else f"http://{base_url}")
-                host = (parsed.netloc or parsed.path).lower()
-
-                if parsed.hostname and not provider_from_config:
-                    try:
-                        addr = ipaddress.ip_address(parsed.hostname)
-                        if addr.is_private or addr.is_loopback or addr.is_link_local:
-                            if "ollama" in host or "127.0.0.1" in host or "localhost" in host:
-                                provider = "ollama"
-                            elif "lmstudio" in host or "lm-studio" in host:
-                                provider = "lmstudio"
-                            else:
-                                # Unknown loopback/private endpoint: route through
-                                # the generic ``custom`` provider so the agent's
-                                # auxiliary client (compression, vision, web
-                                # extraction) takes the OpenAI-compat custom path
-                                # with ``no-key-required`` semantics. Writing
-                                # ``provider: local`` here used to break
-                                # compression mid-conversation because ``local``
-                                # is not a registered provider in
-                                # ``hermes_cli.auth.PROVIDER_REGISTRY`` — see #1384.
-                                provider = "custom"
-                    except ValueError:
-                        pass
-
-                headers = {}
-                api_key = ""
-                if isinstance(model_cfg, dict):
-                    api_key = (model_cfg.get("api_key") or "").strip()
-                if not api_key:
-                    providers_cfg = cfg.get("providers", {})
-                    if isinstance(providers_cfg, dict):
-                        for provider_key in filter(None, [active_provider, "custom"]):
-                            provider_cfg = providers_cfg.get(provider_key, {})
-                            if isinstance(provider_cfg, dict):
-                                api_key = (provider_cfg.get("api_key") or "").strip()
-                                if api_key:
-                                    break
-                if not api_key:
-                    api_key_vars = (
-                        "HERMES_API_KEY",
-                        "HERMES_OPENAI_API_KEY",
-                        "OPENAI_API_KEY",
-                        "LOCAL_API_KEY",
-                        "OPENROUTER_API_KEY",
-                        "API_KEY",
-                    )
-                    for key in api_key_vars:
-                        api_key = (all_env.get(key) or os.getenv(key) or "").strip()
-                        if api_key:
-                            break
-                if api_key:
-                    headers["Authorization"] = f"Bearer {api_key}"
-
                 import socket
 
-                # Build set of hostnames from custom_providers config — these are
-                # user-explicitly configured endpoints and should not be blocked by SSRF.
-                _ssrf_trusted_hosts: set[str] = set()
-                # Also trust the base_url from model config (explicitly configured by user)
-                if cfg_base_url:
-                    _base_parsed = urlparse(cfg_base_url if "://" in cfg_base_url else f"http://{cfg_base_url}")
-                    if _base_parsed.hostname:
-                        _ssrf_trusted_hosts.add(_base_parsed.hostname.lower())
-                _custom_providers_cfg = cfg.get("custom_providers", [])
-                if isinstance(_custom_providers_cfg, list):
-                    for _cp in _custom_providers_cfg:
-                        if not isinstance(_cp, dict):
-                            continue
-                        _cp_base = (_cp.get("base_url") or "").strip()
-                        if _cp_base:
-                            _cp_parsed = urlparse(_cp_base if "://" in _cp_base else f"http://{_cp_base}")
-                            if _cp_parsed.hostname:
-                                _ssrf_trusted_hosts.add(_cp_parsed.hostname.lower())
+                endpoint_url = _models_endpoint_for_base_url(base)
+                headers = {}
+                key = str(api_key or "").strip()
+                if key:
+                    headers["Authorization"] = f"Bearer {key}"
 
-                parsed_url = urlparse(
-                    endpoint_url if "://" in endpoint_url else f"http://{endpoint_url}"
-                )
+                # User-configured custom provider endpoints are explicitly trusted,
+                # but keep the same private-IP guard for non-matching targets used by
+                # the legacy active model.base_url path.
+                _ssrf_trusted_hosts: set[str] = set()
+                for trusted in (base, *trusted_base_urls):
+                    _cp_parsed = urlparse(
+                        str(trusted) if "://" in str(trusted) else f"http://{trusted}"
+                    )
+                    if _cp_parsed.hostname:
+                        _ssrf_trusted_hosts.add(_cp_parsed.hostname.lower())
+
+                parsed_url = urlparse(endpoint_url if "://" in endpoint_url else f"http://{endpoint_url}")
                 if parsed_url.scheme not in ("", "http", "https"):
                     raise ValueError(f"Invalid URL scheme: {parsed_url.scheme}")
                 if parsed_url.hostname:
@@ -3190,56 +3237,116 @@ def get_available_models() -> dict:
                         for _, _, _, _, addr in resolved_ips:
                             addr_obj = ipaddress.ip_address(addr[0])
                             if addr_obj.is_private or addr_obj.is_loopback or addr_obj.is_link_local:
+                                host_l = (parsed_url.hostname or "").lower()
                                 is_known_local = any(
-                                    k in (parsed_url.hostname or "").lower()
-                                    for k in (
-                                        "ollama",
-                                        "localhost",
-                                        "127.0.0.1",
-                                        "lmstudio",
-                                        "lm-studio",
-                                    )
-                                ) or (parsed_url.hostname or "").lower() in _ssrf_trusted_hosts
+                                    k in host_l
+                                    for k in ("ollama", "localhost", "127.0.0.1", "lmstudio", "lm-studio")
+                                ) or host_l in _ssrf_trusted_hosts
                                 if not is_known_local:
-                                    raise ValueError(
-                                        f"SSRF: resolved hostname to private IP {addr[0]}"
-                                    )
+                                    raise ValueError(f"SSRF: resolved hostname to private IP {addr[0]}")
                     except socket.gaierror:
                         pass
+
                 req = urllib.request.Request(endpoint_url, method="GET")
                 req.add_header("User-Agent", "OpenAI/Python 1.0")
                 for k, v in headers.items():
                     req.add_header(k, v)
                 with urllib.request.urlopen(req, timeout=10) as response:  # nosec B310
                     data = json.loads(response.read().decode("utf-8"))
+                return _extract_model_entries_from_payload(data, provider), None
+            except urllib.error.HTTPError as exc:
+                error = _custom_endpoint_error(provider, exc, code=getattr(exc, "code", None))
+                logger.debug("Custom endpoint models fetch failed for provider %s: %s", provider, error)
+                return [], error
+            except Exception as exc:
+                error = _custom_endpoint_error(provider, exc)
+                logger.debug("Custom endpoint unreachable or misconfigured for provider %s: %s", provider, error)
+                return [], error
 
-                models_list = []
-                if "data" in data and isinstance(data["data"], list):
-                    models_list = data["data"]
-                elif "models" in data and isinstance(data["models"], list):
-                    models_list = data["models"]
+        # 4. Fetch models from custom endpoint if base_url is configured
+        auto_detected_models = []
+        auto_detected_models_by_provider: dict[str, list[dict]] = {}
+        if cfg_base_url:
+            base_url = cfg_base_url.strip()
+            configured_provider = _configured_provider_for_base_url(base_url)
+            provider = configured_provider or "custom"
+            provider_from_config = bool(configured_provider)
+            parsed = urlparse(base_url if "://" in base_url else f"http://{base_url}")
+            host = (parsed.netloc or parsed.path).lower()
 
-                for model in models_list:
-                    if not isinstance(model, dict):
-                        continue
-                    model_id = (
-                        model.get("id", "")
-                        or model.get("name", "")
-                        or model.get("model", "")
-                    )
-                    model_name = model.get("name", "") or model.get("model", "") or model_id
-                    if model_id and model_name:
-                        label = _format_ollama_label(model_id) if provider in ("ollama", "ollama-cloud") else model_name
-                        auto_model = {"id": model_id, "label": label}
-                        auto_detected_models.append(auto_model)
-                        provider_key = provider.lower()
-                        auto_detected_models_by_provider.setdefault(provider_key, []).append(auto_model)
-                        detected_providers.add(provider_key)
-            except Exception:
-                logger.debug("Custom endpoint unreachable or misconfigured for provider: %s", provider)
+            if parsed.hostname and not provider_from_config:
+                try:
+                    import ipaddress
+
+                    addr = ipaddress.ip_address(parsed.hostname)
+                    if addr.is_private or addr.is_loopback or addr.is_link_local:
+                        if "ollama" in host or "127.0.0.1" in host or "localhost" in host:
+                            provider = "ollama"
+                        elif "lmstudio" in host or "lm-studio" in host:
+                            provider = "lmstudio"
+                        else:
+                            # Unknown loopback/private endpoint: route through
+                            # the generic ``custom`` provider so the agent's
+                            # auxiliary client (compression, vision, web
+                            # extraction) takes the OpenAI-compat custom path
+                            # with ``no-key-required`` semantics. Writing
+                            # ``provider: local`` here used to break
+                            # compression mid-conversation because ``local``
+                            # is not a registered provider in
+                            # ``hermes_cli.auth.PROVIDER_REGISTRY`` — see #1384.
+                            provider = "custom"
+                except ValueError:
+                    pass
+
+            api_key = ""
+            if isinstance(model_cfg, dict):
+                api_key = (model_cfg.get("api_key") or "").strip()
+            if not api_key:
+                providers_cfg = cfg.get("providers", {})
+                if isinstance(providers_cfg, dict):
+                    for provider_key in filter(None, [active_provider, "custom"]):
+                        provider_cfg = providers_cfg.get(provider_key, {})
+                        if isinstance(provider_cfg, dict):
+                            api_key = (provider_cfg.get("api_key") or "").strip()
+                            if api_key:
+                                break
+            if not api_key:
+                api_key_vars = (
+                    "HERMES_API_KEY",
+                    "HERMES_OPENAI_API_KEY",
+                    "OPENAI_API_KEY",
+                    "LOCAL_API_KEY",
+                    "OPENROUTER_API_KEY",
+                    "API_KEY",
+                )
+                for key in api_key_vars:
+                    api_key = (all_env.get(key) or os.getenv(key) or "").strip()
+                    if api_key:
+                        break
+
+            _trusted_custom_bases: list[object] = [cfg_base_url]
+            _custom_providers_for_trust = cfg.get("custom_providers", [])
+            if isinstance(_custom_providers_for_trust, list):
+                _trusted_custom_bases.extend(
+                    _cp.get("base_url")
+                    for _cp in _custom_providers_for_trust
+                    if isinstance(_cp, dict) and _cp.get("base_url")
+                )
+            _active_endpoint_models, _active_endpoint_error = _read_custom_endpoint_models(
+                base_url,
+                provider,
+                api_key=api_key,
+                trusted_base_urls=tuple(_trusted_custom_bases),
+            )
+            for auto_model in _active_endpoint_models:
+                auto_detected_models.append(auto_model)
+                provider_key = provider.lower()
+                auto_detected_models_by_provider.setdefault(provider_key, []).append(auto_model)
+                detected_providers.add(provider_key)
 
         _custom_providers_cfg = cfg.get("custom_providers", [])
         _named_custom_groups: dict = {}
+        _named_custom_errors: dict[str, dict] = {}
         if isinstance(_custom_providers_cfg, list):
             _seen_custom_ids = set()
             for _cp in _custom_providers_cfg:
@@ -3250,7 +3357,63 @@ def get_available_models() -> dict:
                 if _slug and _slug not in _named_custom_groups:
                     _named_custom_groups[_slug] = (_cp_name, [])
 
-                # Collect model IDs: singular "model" field first, then "models" dict keys
+                _cp_base_url = str(_cp.get("base_url") or "").strip()
+                if _slug and _cp_base_url:
+                    _cp_api_key = str(_cp.get("api_key") or "").strip()
+                    if not _cp_api_key:
+                        _cp_key_env = str(_cp.get("key_env") or "").strip()
+                        if _cp_key_env:
+                            _cp_api_key = str(os.getenv(_cp_key_env) or "").strip()
+
+                    # Check if user has configured models in config.yaml —
+                    # configured models take priority over live /v1/models
+                    # discovery (same as hermes-agent model_switch.py Section 4
+                    # patch). Without this check, ZenMux and similar aggregator
+                    # gateways would show hundreds of online models instead of
+                    # the user's curated list.
+                    _cp_configured_models = _cp.get("models")
+                    _cp_has_configured_models = (
+                        isinstance(_cp_configured_models, (dict, list))
+                        and len(_cp_configured_models) > 0
+                    )
+                    _live_models = auto_detected_models_by_provider.get(_slug)
+                    _live_error = None
+                    if _cp_has_configured_models:
+                        # Skip the live /v1/models probe when an allowlist
+                        # exists — the curated list wins and probe failures
+                        # should not surface as a user-facing diagnostic in
+                        # that case. Still respect any pre-warm result that
+                        # ``auto_detected_models_by_provider`` already
+                        # populated (cheap to keep).
+                        if _live_models is None:
+                            _live_models = []
+                    elif _live_models is None:
+                        _live_models, _live_error = _read_custom_endpoint_models(
+                            _cp_base_url,
+                            _slug,
+                            api_key=_cp_api_key,
+                            trusted_base_urls=(_cp_base_url,),
+                        )
+                    if _live_error:
+                        _named_custom_errors[_slug] = _live_error
+                        detected_providers.add(_slug)
+                    for _live_model in _live_models:
+                        _live_id = str(_live_model.get("id") or "").strip()
+                        if not _live_id:
+                            continue
+                        _dedup_key = f"{_slug}:{_live_id}"
+                        if _dedup_key in _seen_custom_ids:
+                            continue
+                        _seen_custom_ids.add(_dedup_key)
+                        detected_providers.add(_slug)
+                        _cp_option_id = _live_id
+                        if active_provider != _slug and not _cp_option_id.startswith("@"):
+                            _cp_option_id = f"@{_slug}:{_cp_option_id}"
+                        _named_custom_groups[_slug][1].append(
+                            {"id": _cp_option_id, "label": _live_model.get("label") or _get_label_for_model(_live_id, [])}
+                        )
+
+                # Collect configured model IDs as a fallback/sticky entry after live discovery.
                 _cp_model_ids: list[str] = []
                 _cp_model = _cp.get("model", "")
                 if _cp_model:
@@ -3369,8 +3532,11 @@ def get_available_models() -> dict:
                         # changes (e.g. supporting model-less custom_providers entries).
                         if not _nc_models:
                             _nc_models = auto_detected_models_by_provider.get(pid, [])
-                        if _nc_models:
-                            groups.append({"provider": _nc_display, "provider_id": pid, "models": _nc_models})
+                        if _nc_models or pid in _named_custom_errors:
+                            group = {"provider": _nc_display, "provider_id": pid, "models": _nc_models}
+                            if pid in _named_custom_errors:
+                                group["models_endpoint_error"] = _named_custom_errors[pid]
+                            groups.append(group)
                     continue
                 provider_name = _PROVIDER_DISPLAY.get(pid, pid.title())
                 if pid == "openrouter":
@@ -3754,6 +3920,18 @@ def get_available_models() -> dict:
                                 "models": models_for_group,
                             }
                         )
+                    elif pid == "custom" and cfg_base_url:
+                        # Anonymous custom endpoint: /v1/models probe may have
+                        # failed (e.g. llama-server, lightweight relay), but the
+                        # chat endpoint itself may still work.  Add the group
+                        # with an empty model list so the user can type a model
+                        # ID manually rather than being blocked by a silent
+                        # probe failure (#2542).
+                        groups.append({
+                            "provider": provider_name,
+                            "provider_id": pid,
+                            "models": [],
+                        })
         else:
             if default_model:
                 label = _get_label_for_model(default_model, groups)
@@ -3824,6 +4002,36 @@ def get_available_models() -> dict:
             if g.get("models")
             or (g.get("provider_id") or "").startswith("custom:")
         ]
+
+        # Sort groups: active provider first, then custom:* providers,
+        # then providers with configured keys, then the rest alphabetically.
+        _providers_with_keys: set[str] = set()
+        try:
+            _pool = auth_store.get("credential_pool", {}) if isinstance(auth_store, dict) else {}
+            if isinstance(_pool, dict):
+                for _pid in _pool:
+                    _providers_with_keys.add(_resolve_provider_alias(str(_pid)))
+        except Exception:
+            pass
+        try:
+            _cfg_providers = cfg.get("providers", {})
+            if isinstance(_cfg_providers, dict):
+                for _pk, _pv in _cfg_providers.items():
+                    if isinstance(_pv, dict) and (_pv.get("api_key") or _pv.get("key_env")):
+                        _providers_with_keys.add(_resolve_provider_alias(str(_pk)))
+        except Exception:
+            pass
+
+        def _group_sort_key(g):
+            pid = g.get("provider_id") or ""
+            if pid == active_provider:
+                return (0, pid)
+            if pid.startswith("custom:"):
+                return (1, pid)
+            if pid in _providers_with_keys:
+                return (2, pid)
+            return (3, pid)
+        groups.sort(key=_group_sort_key)
 
         # 12. Include model aliases so the WebUI frontend can resolve them.
         model_aliases: dict[str, str] = {}
@@ -3970,6 +4178,14 @@ class StreamChannel:
             self._offline_buffer.clear()
         for q in subscribers:
             q.put_nowait(item)
+
+    def diagnostic_snapshot(self) -> dict[str, int]:
+        """Return non-sensitive stream observation counters for health checks."""
+        with self._lock:
+            return {
+                "subscriber_count": len(self._subscribers),
+                "offline_buffered_events": len(self._offline_buffer),
+            }
 
 
 def create_stream_channel() -> StreamChannel:
@@ -4125,9 +4341,11 @@ _SETTINGS_DEFAULTS = {
     "send_key": "enter",  # 'enter' or 'ctrl+enter'
     "show_token_usage": False,  # show input/output token badge below assistant messages
     "show_quota_chip": False,  # show ambient provider quota chip in composer footer (default off; wide desktop only when enabled, see style.css @media)
+    "hide_empty_state_suggestions": False,  # hide the default new-chat suggestion buttons
     "show_tps": False,  # show tokens-per-second chip in assistant message headers
     "fade_text_effect": False,  # animate newly streamed words with a lightweight fade-in effect
     "show_cli_sessions": False,  # merge CLI sessions from state.db into the sidebar
+    "show_previous_messaging_sessions": False,  # show older Telegram/Discord/etc. reset segments
     "sync_to_insights": False,  # mirror WebUI token usage to state.db for /insights
     "check_for_updates": True,  # check if webui/agent repos are behind upstream
     "whats_new_summary_enabled": False,  # show an LLM-written What's New summary before diff links
@@ -4136,6 +4354,13 @@ _SETTINGS_DEFAULTS = {
     "font_size": "default",  # small | default | large | xlarge
     "session_jump_buttons": False,  # show Start/End transcript jump pills
     "session_endless_scroll": False,  # auto-load older transcript pages while scrolling upward
+    "pinned_sessions_limit": 3,  # maximum active pinned sessions shown in the sidebar
+    "inflight_state_max_sessions": 8,  # max active-stream recovery snapshots kept in browser localStorage
+    "inflight_state_max_messages": 24,  # max recent messages kept per recovery snapshot
+    "inflight_state_max_tool_calls": 48,  # max recent tool-call records kept per recovery snapshot
+    "inflight_state_max_string_chars": 60000,  # max string length kept inside a recovery snapshot field
+    "inflight_state_max_json_chars": 1500000,  # max serialized recovery snapshot payload before pruning
+    "hidden_tabs": [],  # sidebar tab panel names hidden by user (e.g. ["tasks","kanban"]); chat and settings are always visible
     "language": "zh",  # UI locale code; must match a key in static/i18n.js LOCALES
     "bot_name": os.getenv(
         "HERMES_WEBUI_BOT_NAME", "Hermes"
@@ -4164,6 +4389,7 @@ _SETTINGS_SKIN_VALUES = {
     "sienna",
     "catppuccin",
     "nous",
+    "geist-contrast",
 }
 _SETTINGS_LEGACY_THEME_MAP = {
     # Legacy full themes now map onto the closest supported theme + accent skin pair.
@@ -4242,6 +4468,12 @@ def load_settings() -> dict:
         stored.get("skin") if isinstance(stored, dict) else settings.get("skin"),
     )
     settings["default_model"] = get_effective_default_model()
+    try:
+        model_cfg = get_config().get("model", {})
+        if isinstance(model_cfg, dict) and model_cfg.get("provider"):
+            settings["default_model_provider"] = str(model_cfg.get("provider"))
+    except Exception:
+        logger.debug("Failed to resolve default model provider for settings")
     return settings
 
 
@@ -4256,13 +4488,23 @@ _SETTINGS_ENUM_VALUES = {
     "auto_title_refresh_every": {"0", "5", "10", "20"},
     "busy_input_mode": {"queue", "interrupt", "steer"},
 }
+_SETTINGS_INT_RANGES = {
+    "pinned_sessions_limit": (1, 99),
+    "inflight_state_max_sessions": (1, 25),
+    "inflight_state_max_messages": (1, 100),
+    "inflight_state_max_tool_calls": (1, 200),
+    "inflight_state_max_string_chars": (1000, 500000),
+    "inflight_state_max_json_chars": (100000, 4000000),
+}
 _SETTINGS_BOOL_KEYS = {
     "onboarding_completed",
     "show_token_usage",
     "show_quota_chip",
+    "hide_empty_state_suggestions",
     "show_tps",
     "fade_text_effect",
     "show_cli_sessions",
+    "show_previous_messaging_sessions",
     "sync_to_insights",
     "check_for_updates",
     "whats_new_summary_enabled",
@@ -4314,11 +4556,32 @@ def save_settings(settings: dict) -> dict:
             # Validate enum-constrained keys
             if k in _SETTINGS_ENUM_VALUES and v not in _SETTINGS_ENUM_VALUES[k]:
                 continue
+            # Validate bounded integer settings.
+            if k in _SETTINGS_INT_RANGES:
+                try:
+                    v = int(v)
+                except (TypeError, ValueError):
+                    continue
+                min_value, max_value = _SETTINGS_INT_RANGES[k]
+                if v < min_value or v > max_value:
+                    continue
             # Validate language codes (BCP-47-like: 'en', 'zh', 'fr', 'zh-CN')
             if k == "language" and (
                 not isinstance(v, str) or not _SETTINGS_LANG_RE.match(v)
             ):
                 continue
+            # Validate hidden_tabs: must be a list of non-empty strings.
+            # Belt-and-suspenders strip of "chat" and "settings" so a
+            # malicious POST cannot lock the user out of the always-visible
+            # nav tabs even though the client also filters them at apply time.
+            # Stage-394 follow-up to #2636 deep review.
+            if k == "hidden_tabs":
+                if not isinstance(v, list):
+                    continue
+                v = [
+                    s for s in v
+                    if isinstance(s, str) and s.strip() and s not in {"chat", "settings"}
+                ]
             # Coerce bool keys
             if k in _SETTINGS_BOOL_KEYS:
                 v = bool(v)
