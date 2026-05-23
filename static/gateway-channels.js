@@ -189,7 +189,7 @@
 
     var overlay = document.createElement('div');
     overlay.id = 'gwFormOverlay';
-    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:1000';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:1060';
     
     var card = document.createElement('div');
     card.style.cssText = 'background:var(--code-bg);border:1px solid var(--border);border-radius:16px;padding:24px;width:440px;max-width:90vw;max-height:90vh;overflow-y:auto';
@@ -236,7 +236,7 @@
 
     var overlay = document.createElement('div');
     overlay.id = 'gwQROverlay';
-    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:1000';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:1060';
     
     var card = document.createElement('div');
     card.style.cssText = 'background:var(--code-bg);border:1px solid var(--border);border-radius:16px;padding:24px;width:400px;max-width:90vw;text-align:center';
@@ -375,4 +375,7 @@
     }
     refreshGatewayPanel();
   };
+  window.getGatewayPlatforms = function() { return PLATFORMS; };
+  window.openGatewayManualForm = openManualForm;
+  window.openGatewayQRModal = openQRModal;
 })();

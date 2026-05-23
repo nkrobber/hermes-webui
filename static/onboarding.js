@@ -1,4 +1,5 @@
-const ONBOARDING={status:null,step:0,steps:['system','setup','workspace','password','finish'],form:{provider:'openrouter',workspace:'',model:'',password:'',apiKey:'',baseUrl:''},active:false,probe:{status:'idle',error:null,detail:'',models:null,probedKey:''}};
+const ONBOARDING={status:null,step:0,steps:['system','setup','workspace','password','gateway','finish'],form:{provider:'openrouter',workspace:'',model:'',password:'',apiKey:'',baseUrl:''},active:false,probe:{status:'idle',error:null,detail:'',models:null,probedKey:''},configuredPlatforms:[]};
+const _GW_PLATFORMS=(typeof window.getGatewayPlatforms==='function'?window.getGatewayPlatforms().map(function(p){return{id:p.id,label:p.label,hasQR:p.hasQR};}):[{id:'feishu',label:'飞书',hasQR:true},{id:'dingtalk',label:'钉钉',hasQR:false},{id:'weixin',label:'微信',hasQR:true},{id:'wecom',label:'企业微信',hasQR:true},{id:'qqbot',label:'QQ',hasQR:true}]);
 
 // ── Onboarding base-URL probe (#1499) ───────────────────────────────────────
 // Probes <base_url>/models so the wizard can validate the configured endpoint
@@ -123,6 +124,7 @@ function _onboardingStepMeta(key){
     setup:{title:t('onboarding_step_setup_title'),desc:t('onboarding_step_setup_desc')},
     workspace:{title:t('onboarding_step_workspace_title'),desc:t('onboarding_step_workspace_desc')},
     password:{title:t('onboarding_step_password_title'),desc:t('onboarding_step_password_desc')},
+    gateway:{title:t('onboarding_step_gateway_title')||'Messaging platforms',desc:t('onboarding_step_gateway_desc')||'Connect to Feishu, DingTalk, WeChat, WeCom, QQ'},
     finish:{title:t('onboarding_step_finish_title'),desc:t('onboarding_step_finish_desc')}
   })[key];
 }
@@ -372,14 +374,29 @@ function _renderOnboardingBody(){
     return;
   }
 
+  if(key==='gateway'){
+    _setOnboardingNotice(t('onboarding_notice_gateway')||'Add messaging platforms (optional). You can also do this later in Settings.', 'info');
+    body.innerHTML=`<p class="onboarding-copy">${esc(t('onboarding_gateway_help')||'Configure IM platforms so Hermes can notify you on chat apps.')}</p><div class="onboarding-gw-grid" id="onboardingGwGrid"></div>`;
+    _fetchGatewayChannels().then(function(channels){
+      _renderOnboardingGwCards(channels);
+    });
+    return;
+  }
+
   const provider=_getOnboardingSetupProvider(ONBOARDING.form.provider);
   _setOnboardingNotice(t('onboarding_notice_finish'), 'success');
+  var gwConfigured=ONBOARDING.configuredPlatforms||[];
+  var gwLabels=gwConfigured.map(function(id){
+    var p=_GW_PLATFORMS.find(function(x){return x.id===id;});
+    return p?p.label:id;
+  });
   body.innerHTML=`
     <div class="onboarding-summary">
       <div><strong>${t('onboarding_provider_label')}</strong><span>${esc((provider&&provider.label)||ONBOARDING.form.provider||t('onboarding_not_set'))}</span></div>
       <div><strong>${t('onboarding_model_label')}</strong><span>${esc(_getOnboardingSelectedModel()||t('onboarding_not_set'))}</span></div>
       <div><strong>${t('onboarding_workspace_label')}</strong><span>${esc(ONBOARDING.form.workspace||t('onboarding_not_set'))}</span></div>
       <div><strong>${t('onboarding_check_password')}</strong><span>${t(_getOnboardingPasswordSummaryKey(settings))}</span></div>
+      ${gwLabels.length?('<div><strong>'+(t('onboarding_gateway_label')||'Messaging')+'</strong><span>'+esc(gwLabels.join('、'))+'</span></div>'):''}
     </div>
     ${ONBOARDING.form.baseUrl?`<p class="onboarding-copy"><strong>${t('onboarding_base_url_label')}</strong> ${esc(ONBOARDING.form.baseUrl)}</p>`:''}
     <p class="onboarding-copy">${t('onboarding_finish_help')}</p>`;
@@ -390,6 +407,101 @@ function _getOnboardingPasswordSummaryKey(settings){
   const hasNewPassword=!!((ONBOARDING.form.password||'').trim());
   if(hasNewPassword) return hasExistingPassword?'onboarding_password_will_replace':'onboarding_password_will_enable';
   return hasExistingPassword?'onboarding_password_keep_existing':'onboarding_password_remains_disabled';
+}
+
+function _fetchGatewayChannels(){
+  return api('/api/gateway/channels').then(function(res){
+    if(res&&res.ok&&res.channels) return res.channels;
+    return {};
+  }).catch(function(){return {};});
+}
+
+function _renderOnboardingGwCards(channels){
+  var grid=document.getElementById('onboardingGwGrid');
+  if(!grid) return;
+  var configured=[];
+  _GW_PLATFORMS.forEach(function(p){
+    var ch=channels[p.id];
+    if(ch&&ch.configured) configured.push(p.id);
+  });
+  ONBOARDING.configuredPlatforms=configured;
+  grid.innerHTML=_GW_PLATFORMS.map(function(p){
+    var isOn=configured.indexOf(p.id)!==-1;
+    return '<div class="onboarding-gw-card'+(isOn?' configured':'')+'"><div class="onboarding-gw-name">'+esc(p.label)+'</div><div class="onboarding-gw-status">'+(isOn?'\u2713 '+esc(t('onboarding_gateway_configured')||'Configured'):esc(t('onboarding_gateway_not_configured')||'Not configured'))+'</div><button class="onboarding-gw-btn" '+(isOn?'disabled':'')+' onclick="_onOnboardingGwConfigure(\''+p.id+'\')">'+(isOn?esc(t('onboarding_gateway_done')||'Done'):esc(t('onboarding_gateway_configure')||'Configure'))+'</button></div>';
+  }).join('');
+}
+
+function _onOnboardingGwConfigure(platformId){
+  var p=_GW_PLATFORMS.find(function(x){return x.id===platformId;});
+  if(!p) return;
+  if(p.hasQR&&typeof window.openGatewayQRModal==='function'){
+    window.openGatewayQRModal(platformId);
+  } else if(typeof window.openGatewayManualForm==='function'){
+    window.openGatewayManualForm(platformId);
+  } else {
+    _openOnboardingSimpleGatewayForm(platformId);
+  }
+  _pollForGatewayModalClose();
+}
+
+function _pollForGatewayModalClose(){
+  var check=setInterval(function(){
+    var existing=document.getElementById('gwFormOverlay')||document.getElementById('gwQROverlay');
+    if(!existing){
+      clearInterval(check);
+      _fetchGatewayChannels().then(function(channels){
+        _renderOnboardingGwCards(channels);
+      });
+    }
+  }, 600);
+  setTimeout(function(){clearInterval(check);}, 120000);
+}
+
+function _openOnboardingSimpleGatewayForm(platformId){
+  var p=_GW_PLATFORMS.find(function(x){return x.id===platformId;});
+  if(!p) return;
+  var platformMeta=null;
+  if(typeof window.getGatewayPlatforms==='function'){
+    platformMeta=window.getGatewayPlatforms().find(function(x){return x.id===platformId;});
+  }
+  var fields=platformMeta&&platformMeta.fields?platformMeta.fields:[];
+  var existing=document.getElementById('gwFormOverlay');
+  if(existing) existing.remove();
+  var overlay=document.createElement('div');
+  overlay.id='gwFormOverlay';
+  overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:1060';
+  var card=document.createElement('div');
+  card.style.cssText='background:var(--code-bg);border:1px solid var(--border);border-radius:16px;padding:24px;width:400px;max-width:90vw';
+  var html='<div style="font-size:16px;font-weight:600;margin-bottom:16px">'+esc(p.label)+'</div>';
+  fields.forEach(function(f){
+    html+='<div style="margin-bottom:12px"><label style="display:block;font-size:12px;color:var(--muted);margin-bottom:4px">'+esc(f.label)+'</label>';
+    html+='<input class="gw-field" data-key="'+f.key+'" type="'+(f.type||'text')+'" style="width:100%;padding:8px 12px;background:var(--input-bg);border:1px solid var(--border2);border-radius:8px;color:var(--text);font-size:13px;box-sizing:border-box"></div>';
+  });
+  html+='<div style="margin-bottom:16px"><label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer"><input id="gwFormEnabled" type="checkbox" checked> '+esc(t('onboarding_gateway_enable')||'Enable this channel')+'</label></div>';
+  html+='<div id="gwFormStatus" style="font-size:11px;color:var(--muted);margin-bottom:8px;display:none"></div>';
+  html+='<div style="display:flex;gap:8px;justify-content:flex-end">';
+  html+='<button id="gwFormCancel" style="padding:8px 20px;background:var(--code-bg);color:var(--text);border:1px solid var(--border);border-radius:8px;cursor:pointer;font-size:13px">'+esc(t('onboarding_gateway_cancel')||'Cancel')+'</button>';
+  html+='<button id="gwFormSave" style="padding:8px 20px;background:var(--accent);color:var(--text);border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600">'+esc(t('onboarding_gateway_save')||'Save')+'</button></div>';
+  card.innerHTML=html;
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+  function close(){overlay.remove();}
+  document.getElementById('gwFormCancel').addEventListener('click',close);
+  overlay.addEventListener('click',function(e){if(e.target===overlay)close();});
+  document.getElementById('gwFormSave').addEventListener('click',function(){
+    var body={enabled:document.getElementById('gwFormEnabled').checked};
+    overlay.querySelectorAll('.gw-field').forEach(function(inp){
+      var val=inp.value.trim();
+      if(val) body[inp.getAttribute('data-key')]=val;
+    });
+    var statusDiv=document.getElementById('gwFormStatus');
+    statusDiv.style.display='block';
+    statusDiv.innerHTML='<span style="color:var(--muted)">'+esc(t('onboarding_gateway_saving')||'Saving...')+'</span>';
+    fetch('/api/gateway/channels/'+platformId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),credentials:'include'}).then(function(r){return r.json();}).then(function(d){
+      if(d.ok){close();_fetchGatewayChannels().then(function(channels){_renderOnboardingGwCards(channels);});}
+      else{statusDiv.innerHTML='<span style="color:var(--error)">'+esc(d.error||'Save failed')+'</span>';}
+    }).catch(function(){statusDiv.innerHTML='<span style="color:var(--error)">'+esc(t('onboarding_gateway_network_error')||'Network error')+'</span>';});
+  });
 }
 
 function syncOnboardingWorkspaceSelect(value){
@@ -549,6 +661,9 @@ async function nextOnboardingStep(){
     }
     if(ONBOARDING.steps[ONBOARDING.step]==='password'){
       ONBOARDING.form.password=(($('onboardingPasswordInput')||{}).value||'').trim();
+    }
+    if(ONBOARDING.steps[ONBOARDING.step]==='gateway'){
+      // Gateway config is saved in-modals; nothing to validate here
     }
     if(ONBOARDING.step===ONBOARDING.steps.length-1){
       await _finishOnboarding();
