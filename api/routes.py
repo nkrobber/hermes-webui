@@ -3530,6 +3530,13 @@ def handle_get(handler, parsed) -> bool:
     if parsed.path == "/api/providers":
         return j(handler, get_providers())
 
+    # ── Custom Providers API ──
+    if parsed.path.startswith("/api/custom-providers"):
+        from api.custom_provider_mgmt import handle_custom_providers_api
+
+        if handle_custom_providers_api(handler, parsed):
+            return True
+
     # ── Plugins/hooks visibility (read-only, no callback/source internals) ──
     if parsed.path == "/api/plugins":
         return _handle_plugins(handler, parsed)
@@ -4276,71 +4283,12 @@ def handle_get(handler, parsed) -> bool:
             {"name": get_active_profile_name(), "path": str(get_active_hermes_home())},
         )
 
-    # ── Gateway Status (GET) ──
-    if parsed.path == "/api/gateway/status":
-        import datetime
-        identity_map = _load_gateway_session_identity_map()
-        sessions_path = _gateway_session_metadata_path()
+    # ── Gateway management API ──
+    if parsed.path.startswith("/api/gateway/"):
+        from api.gateway_mgmt import handle_gateway_api
 
-        # Detect whether the gateway process is alive, independent of
-        # connected messaging platforms.  An empty identity_map just
-        # means zero platforms connected, not that the gateway is down.
-        #
-        # agent_health.build_agent_health_payload() is the authoritative
-        # signal: it reads gateway.status runtime metadata and returns a
-        # tri-state `alive` field (True/False/None).  This avoids the
-        # false-negative where the gateway is running but has zero active
-        # messaging sessions (empty identity_map).
-        #
-        # `alive` tri-state semantics:
-        #   True  → gateway process is alive
-        #   False → gateway metadata exists but process is down
-        #   None  → no gateway metadata/status available; this WebUI
-        #           setup is probably not configured with a gateway
-        health = build_agent_health_payload()
-        alive = health.get("alive")
-        if alive is True:
-            running = True
-            configured = True
-        elif alive is False:
-            running = False
-            configured = True
-        else:  # alive is None → gateway not configured / unavailable
-            running = bool(identity_map)
-            configured = False
-
-        platforms_set: set[str] = set()
-        for meta in identity_map.values():
-            raw = meta.get("raw_source") or meta.get("platform") or ""
-            norm = _normalize_messaging_source(raw)
-            if norm:
-                platforms_set.add(norm)
-        _PLATFORM_LABELS = {
-            "telegram": "Telegram",
-            "discord": "Discord",
-            "slack": "Slack",
-            "email": "Email",
-            "web": "Web",
-            "api": "API",
-        }
-        platforms = sorted(
-            [{"name": p, "label": _PLATFORM_LABELS.get(p, p.title())} for p in platforms_set],
-            key=lambda x: x["label"],
-        )
-        last_active = ""
-        if running and sessions_path.exists():
-            try:
-                mtime = sessions_path.stat().st_mtime
-                last_active = datetime.datetime.fromtimestamp(mtime).isoformat()
-            except Exception:
-                pass
-        return j(handler, {
-            "running": running,
-            "configured": configured,
-            "platforms": platforms,
-            "last_active": last_active,
-            "session_count": len(identity_map),
-        })
+        if handle_gateway_api(handler, parsed):
+            return True
 
     # ── MCP Servers (GET) ──
     if parsed.path == "/api/mcp/servers":
@@ -5884,6 +5832,20 @@ def handle_post(handler, parsed) -> bool:
             logger.exception("rollback/restore failed")
             return bad(handler, str(e), status=500)
 
+    # ── Custom Providers API (POST/PUT/DELETE) ──
+    if parsed.path.startswith("/api/custom-providers"):
+        from api.custom_provider_mgmt import handle_custom_providers_api
+
+        if handle_custom_providers_api(handler, parsed, body):
+            return True
+
+    # ── Gateway management API (POST) ──
+    if parsed.path.startswith("/api/gateway/"):
+        from api.gateway_mgmt import handle_gateway_api
+
+        if handle_gateway_api(handler, parsed, body):
+            return True
+
     return False  # 404
 
 
@@ -5914,6 +5876,19 @@ def handle_delete(handler, parsed) -> bool:
         if result is False:
             return _kanban_unknown_endpoint(handler, parsed, "DELETE")
         return True
+
+    if parsed.path.startswith("/api/custom-providers"):
+        from api.custom_provider_mgmt import handle_custom_providers_api
+
+        if handle_custom_providers_api(handler, parsed, body):
+            return True
+
+    if parsed.path.startswith("/api/gateway/"):
+        from api.gateway_mgmt import handle_gateway_api
+
+        if handle_gateway_api(handler, parsed, body):
+            return True
+
     return False
 
 # ── GET route helpers ─────────────────────────────────────────────────────────

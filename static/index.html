@@ -344,6 +344,10 @@
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
           <span data-i18n="providers_tab_title">Providers</span>
         </button>
+        <button type="button" class="side-menu-item" data-settings-section="gateway" onclick="switchSettingsSection('gateway')">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M12 5v14M5 12a7 7 0 0 1 7-7h.5a7 7 0 0 1 7 7v.5a7 7 0 0 1-7 7h-.5a7 7 0 0 1-7-7Z"/></svg>
+          <span data-i18n="settings_tab_gateway">Gateway Channels</span>
+        </button>
         <button type="button" class="side-menu-item" data-settings-section="plugins" onclick="switchSettingsSection('plugins')">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2l3 7h7l-5.5 4.3 2.1 7L12 16.2 5.4 20.3l2.1-7L2 9h7z"/></svg>
           <span data-i18n="settings_tab_plugins">Plugins</span>
@@ -1172,6 +1176,15 @@
               No configurable providers found.
             </div>
           </div>
+          <div class="settings-pane" id="settingsPaneGateway">
+            <div class="settings-section-head">
+              <div>
+                <div class="settings-section-title" data-i18n="settings_tab_gateway">Gateway Channels</div>
+                <div class="settings-section-meta">Configure messaging gateway platforms (Feishu, DingTalk, Weixin, WeCom, QQ).</div>
+              </div>
+            </div>
+            <div id="gatewaySettingsContent" style="display:flex;flex-direction:column;margin-top:4px"></div>
+          </div>
           <div class="settings-pane" id="settingsPanePlugins">
             <div class="settings-section-head">
               <div>
@@ -1218,12 +1231,6 @@
               <input type="text" id="settingsDashboardUrl" placeholder="http://127.0.0.1:9119" style="margin-top:8px;width:100%;padding:8px;background:var(--code-bg);color:var(--text);border:1px solid var(--border2);border-radius:6px;font-size:13px">
               <button class="sm-btn" onclick="saveDashboardSettings()" style="margin-top:8px;width:100%;padding:7px;font-weight:600">Save dashboard link settings</button>
               <div id="settingsDashboardStatus" class="settings-autosave-status" aria-live="polite"></div>
-            </div>
-            <!-- Gateway Status Section -->
-            <div class="settings-field" style="margin-top:18px;padding-top:16px;border-top:1px solid var(--border)">
-              <label>Gateway Status</label>
-              <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Status of the Hermes gateway (Telegram, Discord, Slack, etc.)</div>
-              <div id="gatewayStatusCard"><span style="color:var(--muted);font-size:12px">Loading…</span></div>
             </div>
             <!-- MCP Servers Section -->
             <div class="settings-field" style="margin-top:18px;padding-top:16px;border-top:1px solid var(--border)">
@@ -1337,6 +1344,9 @@
 <script src="static/commands.js?v=__WEBUI_VERSION__" defer></script>
 <script src="static/messages.js?v=__WEBUI_VERSION__" defer></script>
 <script src="static/panels.js?v=__WEBUI_VERSION__" defer></script>
+<script src="static/custom-providers.js?v=__WEBUI_VERSION__" defer></script>
+<script src="static/qrcode.js?v=__WEBUI_VERSION__" defer></script>
+<script src="static/gateway-channels.js?v=__WEBUI_VERSION__" defer></script>
 <script src="static/onboarding.js?v=__WEBUI_VERSION__" defer></script>
 <script src="static/boot.js?v=__WEBUI_VERSION__" defer></script>
 
