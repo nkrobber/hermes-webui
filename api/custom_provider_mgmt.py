@@ -60,6 +60,15 @@ def handle_get_custom_providers(handler) -> bool:
     return True
 
 
+def _set_default_model_if_missing(data: dict, provider_name: str, model_name: str) -> None:
+    model_cfg = data.get("model") or {}
+    if not model_cfg.get("provider") or not model_cfg.get("name"):
+        data["model"] = {
+            "provider": f"custom:{provider_name}",
+            "name": model_name,
+        }
+
+
 def handle_post_custom_providers(handler, body=None) -> bool:
     """POST /api/custom-providers -> create a new custom provider."""
     if body is None:
@@ -105,6 +114,8 @@ def handle_post_custom_providers(handler, body=None) -> bool:
         "model": model
     }
     data["custom_providers"].append(new_provider)
+
+    _set_default_model_if_missing(data, name, model)
 
     # Backup and save
     import shutil
@@ -164,6 +175,8 @@ def handle_put_custom_providers(handler, body=None) -> bool:
 
     if not found:
         return bad(handler, f"Provider with name '{name}' not found")
+
+    _set_default_model_if_missing(data, name, model)
 
     # Backup and save
     import shutil
