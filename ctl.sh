@@ -61,7 +61,14 @@ _load_repo_dotenv_preserving_env() {
 _find_python() {
   if [[ -n "${HERMES_WEBUI_PYTHON:-}" ]]; then
     printf '%s\n' "${HERMES_WEBUI_PYTHON}"
-  elif command -v python3 >/dev/null 2>&1; then
+    return 0
+  fi
+  local _agent_venv="${HERMES_WEBUI_AGENT_DIR:-${HOME}/.hermes/hermes-agent}/venv"
+  if [[ -x "${_agent_venv}/bin/python3" ]]; then
+    printf '%s\n' "${_agent_venv}/bin/python3"
+    return 0
+  fi
+  if command -v python3 >/dev/null 2>&1; then
     command -v python3
   elif command -v python >/dev/null 2>&1; then
     command -v python
