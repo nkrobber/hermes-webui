@@ -52,7 +52,7 @@ fi
 
 PYTHON="${HERMES_WEBUI_PYTHON:-}"
 if [[ -z "${PYTHON}" ]]; then
-  local _agent_venv="${HERMES_WEBUI_AGENT_DIR:-${HOME}/.hermes/hermes-agent}/venv"
+  _agent_venv="${HERMES_WEBUI_AGENT_DIR:-${HOME}/.hermes/hermes-agent}/venv"
   if [[ -x "${_agent_venv}/bin/python3" ]]; then
     PYTHON="${_agent_venv}/bin/python3"
   elif command -v python3 >/dev/null 2>&1; then
