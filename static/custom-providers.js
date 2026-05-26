@@ -114,8 +114,8 @@
       var url = urlInput.value.trim();
       var key = keyInput.value.trim();
       var model = modelInput.value.trim();
-      if (!name || !url || !key) {
-        probeStatus.textContent = 'Name, Base URL and API Key are required';
+      if (!name || !url || (!isEdit && !key)) {
+        probeStatus.textContent = isEdit ? 'Name and Base URL are required' : 'Name, Base URL and API Key are required';
         probeStatus.style.color = 'var(--error)';
         return;
       }
