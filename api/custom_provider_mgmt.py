@@ -33,7 +33,7 @@ def handle_custom_providers_api(handler, parsed, body=None) -> bool:
         elif method == 'GET':
             return handle_get_custom_providers(handler)
         elif method == 'DELETE':
-            return handle_delete_custom_providers(handler)
+            return handle_delete_custom_providers(handler, parsed)
         else:
             return False
     elif path == '/api/custom-providers/probe':
@@ -191,7 +191,7 @@ def handle_put_custom_providers(handler, body=None) -> bool:
     return True
 
 
-def handle_delete_custom_providers(handler) -> bool:
+def handle_delete_custom_providers(handler, parsed) -> bool:
     """DELETE /api/custom-providers?name=xxx -> delete custom provider by name."""
     from urllib.parse import parse_qs
     query_str = parsed.query if hasattr(parsed, 'query') else ''
