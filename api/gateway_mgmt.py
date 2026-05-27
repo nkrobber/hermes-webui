@@ -512,8 +512,9 @@ def _handle_start(handler) -> bool:
             logger.warning("Failed to preload .env for gateway start: %s", e)
         
         import subprocess
+        _hermes_bin = shutil.which("hermes") or "hermes"
         proc = subprocess.Popen(
-            ["hermes", "gateway", "start"],
+            [_hermes_bin, "gateway", "start"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
@@ -526,8 +527,9 @@ def _handle_start(handler) -> bool:
 def _handle_stop(handler) -> bool:
     try:
         import subprocess
+        _hermes_bin = shutil.which("hermes") or "hermes"
         result = subprocess.run(
-            ["hermes", "gateway", "stop"],
+            [_hermes_bin, "gateway", "stop"],
             capture_output=True, text=True, timeout=30,
         )
         if result.returncode == 0:
@@ -552,8 +554,9 @@ def _handle_stop(handler) -> bool:
 def _handle_restart(handler) -> bool:
     try:
         import subprocess
+        _hermes_bin = shutil.which("hermes") or "hermes"
         subprocess.run(
-            ["hermes", "gateway", "stop"],
+            [_hermes_bin, "gateway", "stop"],
             capture_output=True, timeout=30,
         )
         try:
@@ -573,7 +576,7 @@ def _handle_restart(handler) -> bool:
     try:
         import subprocess
         subprocess.Popen(
-            ["hermes", "gateway", "start"],
+            [_hermes_bin, "gateway", "start"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
