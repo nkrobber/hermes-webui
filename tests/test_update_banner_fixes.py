@@ -20,6 +20,7 @@ import sys
 import os
 import io
 import json
+import subprocess
 import types
 
 REPO = pathlib.Path(__file__).parent.parent
@@ -224,6 +225,8 @@ class TestUpdateChecker:
                 return 'v0.51.35\nv0.51.34\nv0.51.33', True
             if args[:3] == ['describe', '--tags', '--abbrev=0']:
                 return 'v0.51.34', True
+            if args == ['merge-base', '--is-ancestor', 'HEAD', 'v0.51.35']:
+                return '', True
             if args[:2] == ['remote', 'get-url']:
                 return 'https://github.com/nesquena/hermes-webui.git', True
             return '', False
@@ -426,6 +429,90 @@ class TestApplyUpdateRestartSafety:
         assert result.get('restart_blocked') is True
         assert 'active chat stream' in result['message']
 
+    def test_apply_update_refuses_when_active_run_without_stream(self, tmp_path, monkeypatch):
+        import api.updates as upd
+        from api.config import ACTIVE_RUNS, ACTIVE_RUNS_LOCK, STREAMS, STREAMS_LOCK
+
+        (tmp_path / '.git').mkdir()
+        monkeypatch.setattr(upd, 'REPO_ROOT', tmp_path)
+        monkeypatch.setattr(upd, '_AGENT_DIR', tmp_path)
+        called = []
+        monkeypatch.setattr(upd, '_run_git', lambda *a, **k: (called.append(a) or ('', True)))
+        monkeypatch.setattr(upd, '_schedule_restart', lambda delay=2.0: (_ for _ in ()).throw(AssertionError('must not restart')))
+
+        with STREAMS_LOCK:
+            old_streams = dict(STREAMS)
+            STREAMS.clear()
+        with ACTIVE_RUNS_LOCK:
+            old_runs = dict(ACTIVE_RUNS)
+            ACTIVE_RUNS.clear()
+            ACTIVE_RUNS['run_active'] = {'session_id': 's1', 'stream_id': 'missing-stream'}
+        try:
+            result = upd.apply_update('webui')
+        finally:
+            with ACTIVE_RUNS_LOCK:
+                ACTIVE_RUNS.clear()
+                ACTIVE_RUNS.update(old_runs)
+            with STREAMS_LOCK:
+                STREAMS.clear()
+                STREAMS.update(old_streams)
+
+        assert result['ok'] is False
+        assert result.get('active_streams') == 0
+        assert result.get('active_runs') == 1
+        assert result.get('restart_blocked') is True
+        assert 'active agent run' in result['message']
+        assert called == []
+
+    def test_force_update_refuses_when_active_run_without_stream(self, tmp_path, monkeypatch):
+        import api.updates as upd
+        from api.config import ACTIVE_RUNS, ACTIVE_RUNS_LOCK, STREAMS, STREAMS_LOCK
+
+        (tmp_path / '.git').mkdir()
+        monkeypatch.setattr(upd, 'REPO_ROOT', tmp_path)
+        monkeypatch.setattr(upd, '_AGENT_DIR', tmp_path)
+        monkeypatch.setattr(upd, '_run_git', lambda *a, **k: (_ for _ in ()).throw(AssertionError('must not run git')))
+        monkeypatch.setattr(upd, '_schedule_restart', lambda delay=2.0: (_ for _ in ()).throw(AssertionError('must not restart')))
+
+        with STREAMS_LOCK:
+            old_streams = dict(STREAMS)
+            STREAMS.clear()
+        with ACTIVE_RUNS_LOCK:
+            old_runs = dict(ACTIVE_RUNS)
+            ACTIVE_RUNS.clear()
+            ACTIVE_RUNS['run_active'] = {'session_id': 's1', 'stream_id': 'missing-stream'}
+        try:
+            result = upd.apply_force_update('agent')
+        finally:
+            with ACTIVE_RUNS_LOCK:
+                ACTIVE_RUNS.clear()
+                ACTIVE_RUNS.update(old_runs)
+            with STREAMS_LOCK:
+                STREAMS.clear()
+                STREAMS.update(old_streams)
+
+        assert result['ok'] is False
+        assert result.get('active_streams') == 0
+        assert result.get('active_runs') == 1
+        assert result.get('restart_blocked') is True
+        assert 'active agent run' in result['message']
+
+    def test_wait_until_restart_safe_waits_for_active_run_to_clear(self, monkeypatch):
+        import api.updates as upd
+
+        snapshots = [
+            {'restart_blocked': True, 'active_streams': 0, 'active_runs': 1},
+            {'restart_blocked': False, 'active_streams': 0, 'active_runs': 0},
+        ]
+        sleeps = []
+        monkeypatch.setattr(upd, '_restart_blocker_snapshot', lambda: snapshots.pop(0))
+        monkeypatch.setattr(upd.time, 'sleep', lambda seconds: sleeps.append(seconds))
+
+        result = upd._wait_until_restart_safe(poll_seconds=0.25)
+
+        assert result['restart_blocked'] is False
+        assert sleeps == [0.25]
+
 
 class TestSuccessfulUpdateReturnsRestartScheduled:
     """#814 — successful apply_update must return restart_scheduled: True."""
@@ -474,6 +561,10 @@ class TestSuccessfulUpdateReturnsRestartScheduled:
                 return '', True
             if args[0] == 'tag':
                 return 'v0.51.106\nv0.51.105\nv0.51.104', True
+            if args == ['describe', '--tags', '--abbrev=0']:
+                return 'v0.51.105', True
+            if args == ['merge-base', '--is-ancestor', 'v0.51.106', 'HEAD']:
+                return '', False
             if args[:2] == ['status', '--porcelain']:
                 return '', True
             if args[0] == 'pull':
@@ -839,6 +930,156 @@ class TestUiJsUpdateBanner:
         )
         assert 'location.reload' in fn, (
             "_waitForServerThenReload must call location.reload() once the server is ready"
+        )
+
+    def test_wait_for_server_requires_new_process_identity(self):
+        src = read('static/ui.js')
+        m = re.search(r'function\s+_waitForServerThenReload\b.*?\n\}', src, re.DOTALL)
+        assert m, "_waitForServerThenReload() not found"
+        fn = m.group(0)
+        assert 'baselineServerIdentity' in fn, (
+            "_waitForServerThenReload() should capture and compare a baseline process identity"
+        )
+        assert 'nextServerIdentity!==null&&nextServerIdentity!==baselineServerIdentity' in fn.replace(' ', ''), (
+            "_waitForServerThenReload() should only reload when health process identity changes"
+        )
+        assert 'baselineServerIdentity===null' in fn.replace(' ', ''), (
+            "_waitForServerThenReload() should fallback to existing behavior when baseline is unavailable"
+        )
+
+    def test_wait_for_server_fallbacks_to_ready_on_missing_baseline(self):
+        """Healthy /health should reload immediately when baseline identity is missing."""
+        src = read('static/ui.js')
+        start = src.index("async function _waitForServerThenReload")
+        brace = src.index("{", start)
+        depth = 0
+        end = None
+        for idx in range(brace, len(src)):
+            ch = src[idx]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end = idx + 1
+                    break
+        assert end is not None, "_waitForServerThenReload body was not balanced"
+        fn = src[start:end]
+
+        script = f"""
+let now = 0;
+let reloads = 0;
+let fetches = 0;
+const responses = [
+  {{ ok: true, data: {{ status: 'ok', server_started_at: null, uptime_seconds: 120 }} }},
+];
+const _normalizeHealthServerIdentity = (rawIdentity) => rawIdentity===undefined||rawIdentity===null ? null :
+  (typeof rawIdentity==='string' ? (rawIdentity.trim() ? rawIdentity.trim() : null) :
+   Number.isFinite(Number(rawIdentity)) ? String(Number(rawIdentity)) : null);
+global.window = {{}};
+global.document = {{ baseURI: 'http://127.0.0.1:8788/' }};
+global.location = {{ reload: () => {{ reloads += 1; }} }};
+global.$ = () => null;
+global.Date = {{ now: () => now }};
+global.setTimeout = (cb, ms) => {{ now += ms || 0; cb(); return 0; }};
+global.fetch = async () => {{
+  fetches += 1;
+  const next = responses.shift();
+  if (!next) throw new Error('unexpected extra fetch');
+  return {{
+    ok: next.ok,
+    json: async () => next.data,
+  }};
+}};
+{fn}
+(async () => {{
+  await _waitForServerThenReload({{ interval: 1, maxMs: 10, baselineServerIdentity: null }});
+  if (fetches !== 1) throw new Error('expected fallback baseline to reload on first healthy probe, got '+fetches);
+  if (reloads !== 1) throw new Error('expected exactly one reload on first healthy probe, got '+reloads);
+}})().catch(err => {{ console.error(err.stack || err.message); process.exit(1); }});
+"""
+        subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+
+    def test_wait_for_server_ignores_old_identity_and_reloads_on_new_identity(self):
+        """Healthy /health from the old process should not reload until identity changes."""
+        src = read('static/ui.js')
+        start = src.index("async function _waitForServerThenReload")
+        brace = src.index("{", start)
+        depth = 0
+        end = None
+        for idx in range(brace, len(src)):
+            ch = src[idx]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end = idx + 1
+                    break
+        assert end is not None, "_waitForServerThenReload body was not balanced"
+        fn = src[start:end]
+
+        script = f"""
+let now = 0;
+let reloads = 0;
+let fetches = 0;
+const responses = [
+  {{ ok: true, data: {{ status: 'ok', server_started_at: '1001.234', uptime_seconds: 1000 }} }},
+  {{ ok: true, data: {{ status: 'ok', server_started_at: '1001.234', uptime_seconds: 2000 }} }},
+  {{ ok: true, data: {{ status: 'ok', server_started_at: '1001.235', uptime_seconds: 2010 }} }},
+];
+const _normalizeHealthServerIdentity = (rawIdentity) => rawIdentity===undefined||rawIdentity===null ? null :
+  (typeof rawIdentity==='string' ? (rawIdentity.trim() ? rawIdentity.trim() : null) :
+   Number.isFinite(Number(rawIdentity)) ? String(Number(rawIdentity)) : null);
+global.window = {{}};
+global.document = {{ baseURI: 'http://127.0.0.1:8788/' }};
+global.location = {{ reload: () => {{ reloads += 1; }} }};
+global.$ = () => null;
+global.Date = {{ now: () => now }};
+global.setTimeout = (cb, ms) => {{ now += ms || 0; cb(); return 0; }};
+global.fetch = async () => {{
+  fetches += 1;
+  const next = responses.shift();
+  if (!next) throw new Error('unexpected extra fetch');
+  return {{
+    ok: next.ok,
+    json: async () => next.data,
+  }};
+}};
+{fn}
+(async () => {{
+  await _waitForServerThenReload({{ interval: 1, maxMs: 20, baselineServerIdentity: '1001.234' }});
+  if (fetches !== 3) throw new Error('expected old-process health to be ignored before identity changes, got '+fetches);
+  if (reloads !== 1) throw new Error('expected exactly one reload after new identity, got '+reloads);
+}})().catch(err => {{ console.error(err.stack || err.message); process.exit(1); }});
+"""
+        subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+
+    def test_apply_and_force_updates_capture_identity(self):
+        src = read('static/ui.js')
+        apply_fn = re.search(r'function\s+applyUpdates\b.*?\n\}', src, re.DOTALL)
+        force_fn = re.search(r'function\s+forceUpdate\b.*?\n\}', src, re.DOTALL)
+        assert apply_fn, "applyUpdates() not found"
+        assert force_fn, "forceUpdate() not found"
+        apply_body = apply_fn.group(0)
+        force_body = force_fn.group(0)
+        assert '_readHealthServerIdentity()' in apply_body, (
+            "applyUpdates() must call _readHealthServerIdentity() before reload wait"
+        )
+        assert '_readHealthServerIdentity()' in force_body, (
+            "forceUpdate() must call _readHealthServerIdentity() before reload wait"
+        )
+        assert '_waitForServerThenReload({baselineServerIdentity})' in apply_body, (
+            "applyUpdates() must pass baselineServerIdentity to _waitForServerThenReload()"
+        )
+        assert '_waitForServerThenReload({baselineServerIdentity})' in force_body, (
+            "forceUpdate() must pass baselineServerIdentity to _waitForServerThenReload()"
+        )
+        assert apply_body.index('_readHealthServerIdentity()') < apply_body.index('_waitForServerThenReload({baselineServerIdentity})'), (
+            "applyUpdates() must capture baseline before reload scheduling"
+        )
+        assert force_body.index('_readHealthServerIdentity()') < force_body.index("const res=await api('/api/updates/force'"), (
+            "forceUpdate() must capture baseline before force POST"
         )
 
     def test_refresh_session_handles_restart_mode(self):

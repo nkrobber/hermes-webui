@@ -442,6 +442,10 @@ def _qr_poll_qq(task_id: str) -> dict:
 def _handle_status(handler) -> bool:
     health = build_agent_health_payload()
     alive = health.get("alive")
+    details = health.get("details") if isinstance(health.get("details"), dict) else {}
+    health_reason = details.get("reason")
+    health_state = details.get("state")
+    health_gateway_state = details.get("gateway_state")
 
     pid = None
     uptime = None
@@ -477,9 +481,27 @@ def _handle_status(handler) -> bool:
         running = False
         configured = True
     else:
+        gateway_running_metadata = (
+            health_reason == "gateway_stale_running_state"
+            or health_gateway_state == "running"
+        )
+        configured = True if gateway_running_metadata else len(platform_names) > 0
         running = pid is not None
-        # Gateway is configured if any platform is configured, regardless of running state
-        configured = len(platform_names) > 0
+
+    platforms = sorted(
+        [{"name": p, "label": p.title()} for p in platform_names],
+        key=lambda x: x["label"],
+    )
+
+    last_active = ""
+    try:
+        from api.paths import sessions_dir
+        sessions_path = sessions_dir()
+        if running and sessions_path.exists():
+            mtime = sessions_path.stat().st_mtime
+            last_active = datetime.datetime.fromtimestamp(mtime).isoformat()
+    except Exception:
+        pass
 
     return j(handler, {
         "ok": True,
@@ -487,7 +509,14 @@ def _handle_status(handler) -> bool:
         "configured": configured,
         "pid": pid,
         "uptime_seconds": uptime,
-        "platforms": platform_names,
+        "platforms": platforms,
+        "last_active": last_active,
+        "session_count": 0,
+        "health": {
+            "state": health_state,
+            "reason": health_reason,
+            "gateway_state": health_gateway_state,
+        },
     })
 
 

@@ -142,14 +142,16 @@ def is_cli_session_row(row: dict) -> bool:
     if not isinstance(row, dict):
         return False
     source = _safe_lower(row.get("session_source"))
-    if source == "messaging":
-        return False
-    if source == "cli":
-        return True
     source_tag = _safe_lower(row.get("source_tag"))
     raw_source = _safe_lower(row.get("raw_source"))
     source_name = _safe_lower(row.get("source"))
     source_label = _safe_lower(row.get("source_label"))
+    if "webui" in {source, source_tag, raw_source, source_name, source_label}:
+        return False
+    if source == "messaging":
+        return False
+    if source == "cli":
+        return True
     if source_tag == "cli" or raw_source == "cli" or source_name == "cli" or source_label == "cli":
         return True
 
@@ -593,7 +595,10 @@ def read_session_lineage_report(db_path: Path, session_id: str | None, max_hops:
 
             segment_ids = {row['id'] for row in segments}
             child_rows: list[dict] = []
-            for parent in segments:
+            parent_ids = [row['id'] for row in segments]
+            children_by_parent: dict[str, list[dict]] = {pid: [] for pid in parent_ids}
+            if parent_ids:
+                placeholders = ','.join('?' * len(parent_ids))
                 cur.execute(
                     f"""
                     SELECT s.id,
@@ -605,13 +610,19 @@ def read_session_lineage_report(db_path: Path, session_id: str | None, max_hops:
                            {ended_expr},
                            {end_reason_expr}
                     FROM sessions s
-                    WHERE s.parent_session_id = ?
-                    ORDER BY s.started_at DESC
+                    WHERE s.parent_session_id IN ({placeholders})
                     """,
-                    (parent['id'],),
+                    parent_ids,
                 )
                 for child_row in cur.fetchall():
                     child = dict(child_row)
+                    parent_id = child.get('parent_session_id')
+                    if parent_id in children_by_parent:
+                        children_by_parent[parent_id].append(child)
+            for parent in segments:
+                parent_children = children_by_parent.get(parent['id'], [])
+                parent_children.sort(key=lambda row: row.get('started_at') or 0, reverse=True)
+                for child in parent_children:
                     if child['id'] in segment_ids:
                         continue
                     if _is_continuation_session(parent, child):
@@ -727,6 +738,15 @@ def read_session_lineage_metadata(db_path: Path, session_ids: list[str] | set[st
         state_title = str(row.get('title') or '').strip()
         if state_title:
             metadata.setdefault(sid, {})['_state_db_title'] = state_title
+        state_source = str(row.get('source') or '').strip().lower()
+        if state_source:
+            entry = metadata.setdefault(sid, {})
+            entry['_state_db_source'] = state_source
+            source_meta = normalize_agent_session_source(state_source)
+            entry['_state_db_source_tag'] = state_source
+            entry['_state_db_raw_source'] = source_meta.get('raw_source')
+            entry['_state_db_session_source'] = source_meta.get('session_source')
+            entry['_state_db_source_label'] = source_meta.get('source_label')
 
         parent_id = row.get('parent_session_id')
         parent_row = rows.get(parent_id) if parent_id else None
