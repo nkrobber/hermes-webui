@@ -5788,7 +5788,7 @@ function switchSettingsSection(name){
       });
     }
   }
-  let section=(name==='appearance'||name==='preferences'||name==='providers'||name==='plugins'||name==='system')?name:'conversation';
+  let section=(name==='appearance'||name==='preferences'||name==='providers'||name==='gateway'||name==='plugins'||name==='system')?name:'conversation';
   if(section==='plugins'){
     const pluginsTabBtn=document.querySelector('[data-settings-section="plugins"]');
     if(pluginsTabBtn && pluginsTabBtn.style.display==='none') section='conversation';
