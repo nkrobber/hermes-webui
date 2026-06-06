@@ -82,7 +82,9 @@ def handle_post_custom_providers(handler, body=None) -> bool:
             return bad(handler, "Invalid JSON")
 
     # Validate required fields
-    required = ["name", "base_url", "model"]
+    required = ["name", "base_url"]
+    if not body.get("model") and not body.get("models"):
+        required.append("model")
     for field in required:
         if not body.get(field):
             return bad(handler, f"Missing required field: {field}")
@@ -90,10 +92,14 @@ def handle_post_custom_providers(handler, body=None) -> bool:
     name = body["name"].strip()
     base_url = body["base_url"].strip()
     api_key = body.get("api_key", "").strip()
-    model = body["model"].strip()
-
-    if not name or not base_url or not model:
-        return bad(handler, "Fields cannot be empty")
+    models = body.get("models", [])
+    if isinstance(models, list):
+        models = [m.strip() for m in models if m and isinstance(m, str)]
+    # Backward compat: single model string → wrap as list
+    if not models and body.get("model"):
+        models = [body["model"].strip()]
+    if not models or not name or not base_url:
+        return bad(handler, "At least one model is required")
 
     config_path = _get_config_path()
     data = _load_yaml_config_file(config_path)
@@ -111,11 +117,11 @@ def handle_post_custom_providers(handler, body=None) -> bool:
         "name": name,
         "base_url": base_url,
         "api_key": api_key,
-        "model": model
+        "models": models
     }
     data["custom_providers"].append(new_provider)
 
-    _set_default_model_if_missing(data, name, model)
+    _set_default_model_if_missing(data, name, models[0])
 
     # Backup (if config already exists) and save
     import shutil
@@ -141,7 +147,7 @@ def handle_put_custom_providers(handler, body=None) -> bool:
             return bad(handler, "Invalid JSON")
 
     # Validate required fields
-    required = ["name", "base_url", "model"]
+    required = ["name", "base_url"]
     for field in required:
         if not body.get(field):
             return bad(handler, f"Missing required field: {field}")
@@ -149,7 +155,12 @@ def handle_put_custom_providers(handler, body=None) -> bool:
     name = body["name"].strip()
     base_url = body["base_url"].strip()
     api_key = body.get("api_key", "").strip()
-    model = body["model"].strip()
+    models = body.get("models", [])
+    if isinstance(models, list):
+        models = [m.strip() for m in models if m and isinstance(m, str)]
+    # Backward compat: single model string → wrap as list
+    if not models and body.get("model"):
+        models = [body["model"].strip()]
 
     if not name:
         return bad(handler, "Provider name cannot be empty")
@@ -167,7 +178,9 @@ def handle_put_custom_providers(handler, body=None) -> bool:
             found = True
             # Update fields
             p["base_url"] = base_url
-            p["model"] = model
+            if models:
+                p["models"] = models
+                p.pop("model", None)
             # Only update api_key if non-empty (to allow clearing only if explicitly set?)
             # But instructions: if api_key is empty string, keep existing key
             if api_key != "":
@@ -177,7 +190,8 @@ def handle_put_custom_providers(handler, body=None) -> bool:
     if not found:
         return bad(handler, f"Provider with name '{name}' not found")
 
-    _set_default_model_if_missing(data, name, model)
+    if models:
+        _set_default_model_if_missing(data, name, models[0])
 
     # Backup (if config already exists) and save
     import shutil

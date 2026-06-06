@@ -2028,9 +2028,11 @@ def get_providers() -> dict[str, Any]:
             # Collect models from `models` list or `model` single
             cp_models = []
             if isinstance(cp.get("models"), list):
-                cp_models = [{"id": str(m), "label": str(m)} for m in cp["models"]]
+                cp_models = [{"id": str(m), "label": str(m)} for m in cp["models"] if isinstance(m, str)]
+            elif isinstance(cp.get("model"), list):
+                cp_models = [{"id": str(m), "label": str(m)} for m in cp["model"] if isinstance(m, str)]
             elif cp.get("model"):
-                cp_models = [{"id": cp["model"], "label": cp["model"]}]
+                cp_models = [{"id": str(cp["model"]), "label": str(cp["model"])}]
             # Check for env var reference (${VAR_NAME} pattern)
             cp_api_key = str(cp.get("api_key") or "")
             cp_has_key = bool(cp_api_key.strip())

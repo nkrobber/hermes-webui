@@ -13,8 +13,19 @@
     return key;
   }
 
+  function getModels(provider) {
+    if (provider.models && Array.isArray(provider.models)) {
+      return provider.models;
+    }
+    if (provider.model) {
+      return [provider.model];
+    }
+    return [];
+  }
+
   function showDialog(provider) {
     var isEdit = !!provider;
+    var models = getModels(provider);
     var existing = document.getElementById('cpDialogOverlay');
     if (existing) existing.remove();
 
@@ -23,7 +34,7 @@
     overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:1000';
 
     var card = document.createElement('div');
-    card.style.cssText = 'background:var(--code-bg,#1a1a2e);border:1px solid var(--border);border-radius:16px;padding:24px;width:480px;max-width:90vw;max-height:90vh;overflow-y:auto';
+    card.style.cssText = 'background:var(--code-bg,#1a1a2e);border:1px solid var(--border);border-radius:16px;padding:24px;width:520px;max-width:90vw;max-height:90vh;overflow-y:auto';
 
     card.innerHTML =
       '<div style="font-size:16px;font-weight:600;margin-bottom:16px">' + esc(isEdit ? t('custom_provider_edit') : t('custom_provider_add')) + '</div>' +
@@ -33,9 +44,11 @@
       '<input id="cpBaseUrl" type="url" placeholder="http://localhost:11434/v1" value="' + esc(provider ? provider.base_url : '') + '" style="width:100%;padding:8px 12px;background:var(--code-bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px;box-sizing:border-box"></div>' +
       '<div style="margin-bottom:12px"><label style="display:block;font-size:12px;color:var(--muted);margin-bottom:4px">' + t('custom_provider_api_key') + '</label>' +
       '<input id="cpApiKey" type="password" placeholder="sk-..." value="' + esc(provider ? provider.api_key : '') + '" style="width:100%;padding:8px 12px;background:var(--code-bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px;box-sizing:border-box"></div>' +
-      '<div style="margin-bottom:16px"><label style="display:block;font-size:12px;color:var(--muted);margin-bottom:4px">' + t('custom_provider_model') + '</label>' +
-      '<div style="position:relative"><input id="cpModel" type="text" placeholder="llama3" value="' + esc(provider ? provider.model : '') + '" style="width:100%;padding:8px 12px;background:var(--code-bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px;box-sizing:border-box">' +
-      '<div id="cpModelDropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--code-bg,#1a1a2e);border:1px solid var(--border);border-radius:8px;max-height:200px;overflow-y:auto;z-index:10"></div></div>' +
+      '<div style="margin-bottom:16px"><label style="display:block;font-size:12px;color:var(--muted);margin-bottom:4px">' + (t('custom_provider_models') || 'Models') + '</label>' +
+      '<div id="cpModelsContainer" style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px;min-height:28px;padding:4px;background:var(--code-bg);border:1px solid var(--border);border-radius:8px"></div>' +
+      '<div style="position:relative;display:flex;gap:6px;margin-bottom:4px"><input id="cpModelInput" type="text" placeholder="llama3" style="flex:1;padding:8px 12px;background:var(--code-bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px;box-sizing:border-box">' +
+      '<button id="cpModelAddBtn" style="padding:8px 14px;background:var(--accent);color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600;white-space:nowrap">+</button>' +
+      '<div id="cpModelDropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--code-bg,#1a1a2e);border:1px solid var(--border);border-radius:8px;max-height:200px;overflow-y:auto;z-index:10;box-sizing:border-box"></div></div>' +
       '<div id="cpProbeStatus" style="font-size:11px;color:var(--muted);margin-top:4px"></div></div>' +
       '<div style="display:flex;gap:8px;justify-content:flex-end">' +
       '<button id="cpCancelBtn" style="padding:8px 20px;background:var(--code-bg);color:var(--text);border:1px solid var(--border);border-radius:8px;cursor:pointer;font-size:13px">' + t('custom_provider_cancel') + '</button>' +
@@ -47,11 +60,49 @@
     var nameInput = document.getElementById('cpName');
     var urlInput = document.getElementById('cpBaseUrl');
     var keyInput = document.getElementById('cpApiKey');
-    var modelInput = document.getElementById('cpModel');
+    var modelInput = document.getElementById('cpModelInput');
+    var modelAddBtn = document.getElementById('cpModelAddBtn');
+    var modelsContainer = document.getElementById('cpModelsContainer');
     var modelDropdown = document.getElementById('cpModelDropdown');
     var probeStatus = document.getElementById('cpProbeStatus');
     var saveBtn = document.getElementById('cpSaveBtn');
     var cancelBtn = document.getElementById('cpCancelBtn');
+
+    var modelList = models.slice();
+
+    function renderModels() {
+      modelsContainer.innerHTML = '';
+      modelList.forEach(function(m, idx) {
+        var tag = document.createElement('span');
+        tag.style.cssText = 'display:inline-flex;align-items:center;gap:4px;padding:2px 8px;background:var(--accent);color:#fff;border-radius:6px;font-size:12px';
+        tag.textContent = m;
+        var del = document.createElement('span');
+        del.textContent = '\u00d7';
+        del.style.cssText = 'cursor:pointer;font-weight:700;font-size:14px;line-height:1;opacity:0.8';
+        del.onmouseover = function(){ del.style.opacity = '1'; };
+        del.onmouseout = function(){ del.style.opacity = '0.8'; };
+        del.onclick = function(){ modelList.splice(idx, 1); renderModels(); };
+        tag.appendChild(del);
+        modelsContainer.appendChild(tag);
+      });
+    }
+    renderModels();
+
+    function addModel(m) {
+      m = (m || '').trim();
+      if (!m) return;
+      if (modelList.indexOf(m) === -1) {
+        modelList.push(m);
+        renderModels();
+      }
+      modelInput.value = '';
+      modelDropdown.style.display = 'none';
+    }
+
+    modelInput.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') { e.preventDefault(); addModel(modelInput.value); }
+    });
+    modelAddBtn.addEventListener('click', function() { addModel(modelInput.value); });
 
     function close() { overlay.remove(); }
 
@@ -75,11 +126,11 @@
             opt.style.cssText = 'padding:6px 12px;cursor:pointer;font-size:13px';
             opt.onmouseover = function(){ opt.style.background = 'var(--accent)'; };
             opt.onmouseout = function(){ opt.style.background = ''; };
-            opt.onclick = function(){ modelInput.value = m.id || m.label; modelDropdown.style.display = 'none'; };
+            opt.onclick = function(){ addModel(m.id || m.label); };
             modelDropdown.appendChild(opt);
           });
           modelDropdown.style.display = '';
-          probeStatus.textContent = t('custom_provider_models_found', data.models.length);
+          probeStatus.textContent = t('custom_provider_models_found', data.models.length) + ' ' + (t('custom_provider_click_to_add') || '(click to add)');
           probeStatus.style.color = 'var(--success)';
         } else {
           probeStatus.textContent = t('custom_provider_no_models');
@@ -99,13 +150,6 @@
     urlInput.addEventListener('input', onUrlOrKeyChange);
     keyInput.addEventListener('input', onUrlOrKeyChange);
 
-    modelInput.addEventListener('focus', function(){
-      if (modelDropdown.children.length) modelDropdown.style.display = '';
-    });
-    modelInput.addEventListener('blur', function(){
-      setTimeout(function(){ modelDropdown.style.display = 'none'; }, 200);
-    });
-
     cancelBtn.addEventListener('click', close);
     overlay.addEventListener('click', function(e){ if (e.target === overlay) close(); });
 
@@ -113,9 +157,13 @@
       var name = nameInput.value.trim();
       var url = urlInput.value.trim();
       var key = keyInput.value.trim();
-      var model = modelInput.value.trim();
       if (!name || !url || (!isEdit && !key)) {
         probeStatus.textContent = isEdit ? 'Name and Base URL are required' : 'Name, Base URL and API Key are required';
+        probeStatus.style.color = 'var(--error)';
+        return;
+      }
+      if (!modelList.length) {
+        probeStatus.textContent = 'At least one model is required';
         probeStatus.style.color = 'var(--error)';
         return;
       }
@@ -123,7 +171,7 @@
       fetch('/api/custom-providers', {
         method: method,
         headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({name: name, base_url: url, api_key: key, model: model}),
+        body: JSON.stringify({name: name, base_url: url, api_key: key, models: modelList}),
         credentials: 'include'
       }).then(function(r){ return r.json(); }).then(function(data){
         if (data.ok) { close(); renderCustomProvidersSection(); }
@@ -163,9 +211,11 @@
       } else {
         html += '<div style="display:flex;flex-direction:column;gap:4px">';
         providers.forEach(function(p){
+          var models = getModels(p);
+          var modelsStr = models.length ? ' · ' + models.join(', ') : '';
           html += '<div style="display:flex;align-items:center;padding:8px 10px;background:var(--code-bg,#1a1a2e);border:1px solid var(--border);border-radius:8px">';
           html += '<div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(p.name) + '</div>';
-          html += '<div style="font-size:11px;color:var(--muted)">' + esc(p.base_url) + (p.model ? ' · ' + esc(p.model) : '') + '</div></div>';
+          html += '<div style="font-size:11px;color:var(--muted)">' + esc(p.base_url) + esc(modelsStr) + '</div></div>';
           html += '<button class="cp-edit-btn" data-name="' + esc(p.name) + '" style="background:none;border:none;cursor:pointer;padding:4px 8px;color:var(--muted)" title="' + t('custom_provider_edit') + '">' +
             '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>';
           html += '<button class="cp-delete-btn" data-name="' + esc(p.name) + '" style="background:none;border:none;cursor:pointer;padding:4px 8px;color:var(--muted)" title="Delete">' +

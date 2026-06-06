@@ -10063,7 +10063,13 @@ def _handle_live_models(handler, parsed):
                     if _mid and _mid not in _ids:
                         _ids.append(_mid)
 
-                _append(_cp.get("model", ""))
+                _raw_model = _cp.get("model", "")
+                if isinstance(_raw_model, list):
+                    for _m in _raw_model:
+                        if isinstance(_m, str):
+                            _append(_m)
+                elif _raw_model:
+                    _append(_raw_model)
                 _models = _cp.get("models")
                 if isinstance(_models, dict):
                     for _mid in _models:

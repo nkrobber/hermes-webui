@@ -1851,19 +1851,40 @@ def resolve_model_provider(model_id: str) -> tuple:
         for entry in custom_providers:
             if not isinstance(entry, dict):
                 continue
-            entry_model = (entry.get('model') or '').strip()
+            raw_model = entry.get('model')
+            if isinstance(raw_model, list):
+                entry_model = ''
+                entry_model_list = raw_model
+            else:
+                entry_model = str(raw_model or '').strip()
+                entry_model_list = None
             entry_name = (entry.get('name') or '').strip()
             entry_base_url = (entry.get('base_url') or '').strip()
             entry_model_ids = set()
             if entry_model:
                 entry_model_ids.add(entry_model)
             entry_models = entry.get('models')
+            if entry_model_list:
+                if isinstance(entry_models, list):
+                    entry_models = entry_models + [m for m in entry_model_list if isinstance(m, str) and m.strip() and m.strip() not in entry_models]
+                else:
+                    entry_models = entry_model_list
             if isinstance(entry_models, dict):
                 entry_model_ids.update(
                     key.strip()
                     for key in entry_models.keys()
                     if isinstance(key, str) and key.strip()
                 )
+            elif isinstance(entry_models, list):
+                for _item in entry_models:
+                    if isinstance(_item, str):
+                        _mid = _item.strip()
+                        if _mid:
+                            entry_model_ids.add(_mid)
+                    elif isinstance(_item, dict):
+                        _mid = str(_item.get("id") or _item.get("model") or _item.get("name") or "").strip()
+                        if _mid:
+                            entry_model_ids.add(_mid)
             if entry_name and model_id in entry_model_ids:
                 provider_hint = _custom_provider_slug_from_name(entry_name)
                 return model_id, provider_hint, entry_base_url or None
@@ -4146,9 +4167,13 @@ def get_available_models() -> dict:
 
                 # Collect configured model IDs as a fallback/sticky entry after live discovery.
                 _cp_model_ids: list[str] = []
-                _cp_model = _cp.get("model", "")
-                if _cp_model:
-                    _cp_model_ids.append(_cp_model)
+                _raw_cp_model = _cp.get("model", "")
+                if isinstance(_raw_cp_model, list):
+                    for _m in _raw_cp_model:
+                        if isinstance(_m, str) and _m.strip():
+                            _cp_model_ids.append(_m.strip())
+                elif _raw_cp_model:
+                    _cp_model_ids.append(str(_raw_cp_model).strip())
                 _cp_models_dict = _cp.get("models")
                 if isinstance(_cp_models_dict, dict):
                     for _m_id in _cp_models_dict:
