@@ -14,6 +14,7 @@
   }
 
   function getModels(provider) {
+    if (!provider) return [];
     if (provider.models && Array.isArray(provider.models)) {
       return provider.models;
     }
