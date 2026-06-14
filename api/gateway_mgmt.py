@@ -25,6 +25,35 @@ logger = logging.getLogger(__name__)
 
 _PLATFORMS = frozenset({"feishu", "dingtalk", "weixin", "wecom", "qqbot"})
 
+
+def _resolve_hermes_bin() -> str:
+    """Resolve the Hermes CLI for subprocess calls, including systemd's thin PATH."""
+    candidates = []
+    env_bin = os.environ.get("HERMES_BIN")
+    if env_bin:
+        candidates.append(Path(env_bin).expanduser())
+    path_bin = shutil.which("hermes")
+    if path_bin:
+        candidates.append(Path(path_bin))
+    candidates.extend([
+        Path.home() / ".local" / "bin" / "hermes",
+        Path.home() / ".hermes" / "hermes-agent" / "venv" / "bin" / "hermes",
+        Path.home() / ".hermes" / "hermes-agent" / "hermes_cli" / "main.py",
+    ])
+
+    seen = set()
+    for candidate in candidates:
+        candidate = str(candidate)
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+
+    tried = ", ".join(str(Path(c).expanduser()) for c in seen if c)
+    raise FileNotFoundError(f"Unable to resolve Hermes CLI; tried: {tried}")
+
+
 _PLATFORM_REQUIRED_FIELDS = {
     "feishu": ["app_id", "app_secret"],
     "dingtalk": ["client_id", "client_secret"],
@@ -541,7 +570,7 @@ def _handle_start(handler) -> bool:
             logger.warning("Failed to preload .env for gateway start: %s", e)
         
         import subprocess
-        _hermes_bin = shutil.which("hermes") or "hermes"
+        _hermes_bin = _resolve_hermes_bin()
         proc = subprocess.Popen(
             [_hermes_bin, "gateway", "start"],
             stdout=subprocess.DEVNULL,
@@ -556,7 +585,7 @@ def _handle_start(handler) -> bool:
 def _handle_stop(handler) -> bool:
     try:
         import subprocess
-        _hermes_bin = shutil.which("hermes") or "hermes"
+        _hermes_bin = _resolve_hermes_bin()
         result = subprocess.run(
             [_hermes_bin, "gateway", "stop"],
             capture_output=True, text=True, timeout=30,
@@ -583,7 +612,7 @@ def _handle_stop(handler) -> bool:
 def _handle_restart(handler) -> bool:
     try:
         import subprocess
-        _hermes_bin = shutil.which("hermes") or "hermes"
+        _hermes_bin = _resolve_hermes_bin()
         subprocess.run(
             [_hermes_bin, "gateway", "stop"],
             capture_output=True, timeout=30,
