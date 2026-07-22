@@ -332,7 +332,8 @@
           }).catch(function(){});
         }, 3000);
       } else {
-        document.getElementById('gwQRCode').innerHTML = '<span style="color:var(--error);font-size:12px">QR unavailable</span>';
+        var errMsg = d.error || 'QR unavailable';
+        document.getElementById('gwQRCode').innerHTML = '<span style="color:var(--error);font-size:12px">' + esc(errMsg) + '</span>';
         document.getElementById('gwQRStatus').innerHTML = '';
       }
     }).catch(function(){
