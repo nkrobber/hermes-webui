@@ -104,7 +104,7 @@ def _save_config(data: dict) -> None:
 
 def _qr_begin_feishu() -> dict:
     try:
-        from gateway.platforms.feishu import _begin_registration
+        from plugins.platforms.feishu.adapter import _begin_registration
     except ImportError as exc:
         return {"ok": False, "error": f"feishu module unavailable: {exc}"}
     try:
@@ -123,7 +123,7 @@ def _qr_begin_feishu() -> dict:
 
 def _qr_begin_wecom() -> dict:
     try:
-        from gateway.platforms.wecom import _QR_GENERATE_URL
+        from plugins.platforms.wecom.adapter import _QR_GENERATE_URL
     except ImportError:
         return {"ok": False, "error": "wecom module unavailable"}
     try:
@@ -162,7 +162,7 @@ def _qr_poll_wecom(task_id: str) -> dict:
         return {"ok": False, "error": "missing task_id (scode)"}
 
     try:
-        from gateway.platforms.wecom import _QR_QUERY_URL
+        from plugins.platforms.wecom.adapter import _QR_QUERY_URL
     except ImportError:
         return {"ok": False, "error": "wecom module unavailable"}
 
@@ -208,7 +208,7 @@ def _qr_poll_feishu(device_code: str) -> dict:
     Returns immediately with current status, does not block waiting for completion.
     """
     try:
-        from gateway.platforms.feishu import (
+        from plugins.platforms.feishu.adapter import (
             _accounts_base_url,
             _REGISTRATION_PATH,
             _ONBOARD_REQUEST_TIMEOUT_S,
