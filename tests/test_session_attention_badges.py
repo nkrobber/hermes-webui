@@ -2,6 +2,7 @@ import io
 import json
 import pathlib
 import sys
+from types import SimpleNamespace
 from urllib.parse import urlparse
 
 REPO_ROOT = pathlib.Path(__file__).parent.parent.resolve()
@@ -40,6 +41,56 @@ def _clear_attention_state(*session_ids):
             routes._gateway_queues.pop(sid, None)
     for sid in session_ids:
         clarify.clear_pending(sid)
+
+
+def test_attention_summary_purges_stale_gateway_mirror():
+    sid = "attention-stale-gateway-session"
+    _clear_attention_state(sid)
+    try:
+        approval = {
+            "approval_id": "stale-gateway-approval",
+            "command": "rm -rf /tmp/nope",
+            "description": "Danger",
+        }
+        with routes._lock:
+            routes._gateway_queues[sid] = [SimpleNamespace(data=dict(approval))]
+        routes.submit_gateway_pending_mirror(sid, approval)
+
+        with routes._lock:
+            assert routes._pending[sid]
+            routes._gateway_queues[sid].pop(0)
+            assert routes._pending[sid]
+
+        assert routes._session_attention_summary(sid) is None
+        with routes._lock:
+            assert sid not in routes._pending
+    finally:
+        _clear_attention_state(sid)
+
+
+def test_attention_summary_keeps_live_gateway_mirror():
+    sid = "attention-live-gateway-session"
+    _clear_attention_state(sid)
+    try:
+        approval = {
+            "approval_id": "live-gateway-approval",
+            "command": "touch /tmp/nope",
+            "description": "Also danger",
+        }
+        with routes._lock:
+            routes._gateway_queues[sid] = [SimpleNamespace(data=dict(approval))]
+        routes.submit_gateway_pending_mirror(sid, approval)
+
+        assert routes._session_attention_summary(sid) == {
+            "kind": "approval",
+            "count": 1,
+            "severity": "critical",
+        }
+        with routes._lock:
+            assert len(routes._pending[sid]) == 1
+            assert routes._pending[sid][0]["approval_id"] == approval["approval_id"]
+    finally:
+        _clear_attention_state(sid)
 
 
 def test_attention_summary_prefers_pending_approvals_over_clarify_questions():
@@ -94,7 +145,7 @@ def test_sessions_api_includes_attention_summary_for_sidebar_rows(monkeypatch):
     try:
         routes.submit_pending(sid, {"command": "sudo service restart", "description": "Restart"})
 
-        monkeypatch.setattr(routes, "all_sessions", lambda diag=None: [{
+        monkeypatch.setattr(routes, "all_sessions", lambda diag=None, **_kwargs: [{
             "session_id": sid,
             "title": "Needs approval",
             "profile": "default",
@@ -148,6 +199,13 @@ def test_session_sidebar_renders_attention_badge_and_semantic_classes():
     assert ".session-item.attention-clarify" in style_css
     # The text-badge styles were removed; the dot now carries the color.
     assert ".session-attention-badge" not in style_css
+    assert "is-attention-clarify" in sessions_js, (
+        "renderSessionList must tag the state indicator with is-attention-clarify."
+    )
     assert ".session-state-indicator.is-attention-approval" in style_css
     assert ".session-state-indicator.is-attention-clarify" in style_css
+    assert ".session-state-indicator.is-attention-generic{visibility:visible;}" in style_css
+    assert ".session-state-indicator.is-attention-approval{color:var(--error);}" in style_css
+    assert ".session-state-indicator.is-attention-clarify{color:var(--warning);}" in style_css
+    assert ".session-state-indicator.is-attention-generic{color:var(--warning);}" in style_css
     assert "prefers-reduced-motion" in style_css
