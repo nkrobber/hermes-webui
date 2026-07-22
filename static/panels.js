@@ -7722,7 +7722,24 @@ function _composerControlDefsForSettings(){
   return baseDefs.concat(situationalDefs);
 }
 
-function switchSettingsSection(name,opts){
+function _getComposerControlOrder(){
+  if(Array.isArray(window._composerControlOrder)){
+    return typeof window._sanitizeComposerControlOrder==='function'
+      ? window._sanitizeComposerControlOrder(window._composerControlOrder)
+      : window._composerControlOrder.slice();
+  }
+  try{
+    const raw=localStorage.getItem(_COMPOSER_CONTROL_ORDER_LS_KEY);
+    if(raw){
+      const parsed=JSON.parse(raw);
+      if(typeof window._sanitizeComposerControlOrder==='function') return window._sanitizeComposerControlOrder(parsed);
+      if(Array.isArray(parsed)) return parsed.filter(key=>typeof key==='string');
+    }
+  }catch(e){}
+  return [];
+}
+
+function _setComposerControlOrder(order){
   const sanitized=typeof window._sanitizeComposerControlOrder==='function'
     ? window._sanitizeComposerControlOrder(order)
     : (Array.isArray(order)?order.filter(key=>typeof key==='string') : []);
@@ -7890,7 +7907,7 @@ function switchSettingsSection(name,opts){
     _settingsSection = name;
     return;
   }
-  let section=(name==='appearance'||name==='preferences'||name==='providers'||name==='plugins'||name==='extensions'||name==='system'||name==='help')?name:'conversation';
+  let section=(name==='appearance'||name==='preferences'||name==='providers'||name==='plugins'||name==='extensions'||name==='gateway'||name==='system'||name==='help')?name:'conversation';
   // Deep-linking to the Plugins pane when the tab is hidden (no plugins
   // installed, #3457) falls back to Conversation. Resolve this BEFORE toggling
   // panes/sidebar/dropdown below so every downstream selection uses the
@@ -7986,6 +8003,7 @@ async function _buildSettingsIndex() {
       settingsPanePreferences: 'preferences',
       settingsPaneProviders: 'providers',
       settingsPanePlugins: 'plugins',
+      settingsPaneGateway: 'gateway',
       settingsPaneExtensions: 'extensions',
       settingsPaneSystem: 'system',
       settingsPaneHelp: 'help',
@@ -8118,6 +8136,7 @@ async function filterSettings(query) {
     appearance: t('settings_tab_appearance') || 'Appearance',
     preferences: t('settings_tab_preferences') || 'Preferences',
     providers: t('providers_tab_title') || 'Providers',
+    gateway: t('settings_tab_gateway') || 'Gateway Channels',
     plugins: t('settings_tab_plugins') || 'Plugins',
     extensions: t('settings_tab_extensions') || 'Extensions',
     system: t('settings_tab_system') || 'System',
